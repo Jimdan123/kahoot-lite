@@ -21,6 +21,11 @@ def create_app(config_name='default'):
 
     app.config['UPLOAD_FOLDER'].mkdir(parents=True, exist_ok=True)
 
+    # Rate limiting is on by default; set RATELIMIT_ENABLED=0 to turn it off.
+    # The functional test suites need it off (they sign up repeatedly); the
+    # security suite leaves it on to assert the throttle actually fires.
+    app.config['RATELIMIT_ENABLED'] = os.environ.get('RATELIMIT_ENABLED', '1') != '0'
+
     db.init_app(app)
     limiter.init_app(app)
     # async_mode auto-detected: threading locally, gevent under the
@@ -44,6 +49,28 @@ def create_app(config_name='default'):
     app.register_blueprint(quiz_bp, url_prefix='/quiz')
     app.register_blueprint(game_bp, url_prefix='/game')
     app.register_blueprint(ai_bp, url_prefix='/ai')
+
+    # Security response headers. Covers most of what Mozilla Observatory
+    # grades: framing, MIME sniffing, referrer leakage, permission grants,
+    # and (in prod) HTTPS enforcement.
+    is_production = config_name == 'production'
+
+    @app.after_request
+    def _security_headers(response):
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.headers.setdefault(
+            'Permissions-Policy',
+            'geolocation=(), microphone=(), camera=(), payment=()',
+        )
+        if is_production:
+            # 1 year; keeps browsers on HTTPS after the first visit.
+            response.headers.setdefault(
+                'Strict-Transport-Security',
+                'max-age=31536000; includeSubDomains',
+            )
+        return response
 
     # In-memory game rooms never free themselves otherwise: a finished or
     # abandoned room would sit in the registry until the process restarts,

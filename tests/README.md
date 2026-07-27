@@ -27,6 +27,33 @@ via public `player_list` must be blocked by the rejoin-token check).
 `test_reconnect.py` covers the follow-up fix (a mid-game disconnect + rejoin
 with the real token restores score/answer state and catches the socket up).
 
+## Rate limiting and the functional suites
+
+Auth routes are rate-limited (login 10/min, signup 3/min & 10/hour). The three
+suites above sign up repeatedly, so run the SERVER with the throttle off for
+them:
+
+```bash
+RATELIMIT_ENABLED=0 SECRET_KEY=dev-secret PORT=5001 python run.py
+```
+
+## Security suite
+
+`test_security.py` verifies the hardening itself and must run against a server
+with rate limiting ON (the default — do **not** set `RATELIMIT_ENABLED=0`):
+
+```bash
+rm -f instance/kahoot.db                              # fresh login window
+SECRET_KEY=dev-secret PORT=5001 python run.py         # limits ON by default
+BASE=http://localhost:5001 python tests/test_security.py
+```
+
+It checks four properties: the login throttle returns 429 past the cap; a
+crafted `?next=` cannot redirect off-origin; SQL-injection payloads in the
+login form never authenticate; and an answer submitted after `time_limit` +
+grace earns no points. The login throttle is stateful per-IP, so start from a
+fresh server (or wait ~60s between runs) to avoid a pre-exhausted window.
+
 ## Why standalone scripts instead of pytest
 
 Historical — these grew from ad-hoc smoke checks during development. Converting
