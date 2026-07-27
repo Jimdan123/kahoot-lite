@@ -10,8 +10,8 @@ def create_app(config_name='default'):
     app.config['UPLOAD_FOLDER'].mkdir(parents=True, exist_ok=True)
 
     db.init_app(app)
-    # async_mode is auto-detected: 'threading' locally, 'eventlet' under gunicorn's
-    # eventlet worker in production. See README's deployment section.
+    # async_mode auto-detected: threading locally, gevent under the
+    # GeventWebSocketWorker in production. See README's deployment section.
     socketio.init_app(app, cors_allowed_origins='*')
     login_manager.init_app(app)
     csrf.init_app(app)
