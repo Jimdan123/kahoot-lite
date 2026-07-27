@@ -97,7 +97,8 @@ The QR codes in `/game/host/<pin>` will automatically use that public URL, so pl
 
 **Caveats on the free tier:**
 - App **sleeps after 15 min of inactivity** (~30s cold start on next request)
-- SQLite lives on the container filesystem, which is **ephemeral** — the DB resets on every redeploy. Fine for a demo; for anything permanent, upgrade to Render's free Postgres and set `DATABASE_URL` accordingly.
+- The Blueprint provisions a free Postgres database automatically. If you deployed *without* the Blueprint (manual Web Service), the app will fall back to SQLite on the container filesystem, which is **ephemeral** — the DB resets on every redeploy. To fix that, provision a Postgres database in the Render dashboard and set its `DATABASE_URL` on the web service.
+- Render's free Postgres expires after 90 days — you'll need to snapshot/migrate or accept data loss at that point.
 - One worker only. For a class demo this is plenty; scaling requires Redis for shared room state.
 
 ## References

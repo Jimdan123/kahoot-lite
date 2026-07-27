@@ -10,6 +10,7 @@ Pillow>=10.0.0
 gevent>=24.2.1
 gevent-websocket>=0.10.1
 gunicorn>=22.0.0
+psycopg2-binary>=2.9.9
 Werkzeug>=3.0.0
 email-validator>=2.0.0
 

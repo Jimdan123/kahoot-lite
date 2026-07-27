@@ -1,3 +1,9 @@
+databases:
+  - name: kahoot-lite-db
+    plan: free
+    databaseName: kahoot_lite
+    user: kahoot_lite
+
 services:
   - type: web
     name: kahoot-lite
@@ -12,3 +18,7 @@ services:
         generateValue: true
       - key: PYTHON_VERSION
         value: 3.12.7
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kahoot-lite-db
+          property: connectionString
