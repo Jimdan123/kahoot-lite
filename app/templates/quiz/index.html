@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>My Question Sets</h2>
+    <a href="{{ url_for('quiz.new_set') }}" class="btn btn-primary">+ New Question Set</a>
+</div>
+{% if question_sets %}
+<div class="row g-3">
+    {% for qs in question_sets %}
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5>{{ qs.name }}</h5>
+                <p class="text-muted small">{{ qs.description or 'No description' }}</p>
+                <p class="small">{{ qs.questions.count() }} question(s)</p>
+                <a href="{{ url_for('quiz.detail', set_id=qs.id) }}" class="btn btn-sm btn-outline-primary">Open</a>
+                {% if qs.questions.count() > 0 %}
+                <form method="POST" action="{{ url_for('game.create_room', set_id=qs.id) }}" class="d-inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-sm btn-success">Host</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-muted">No question sets yet. Create one to get started.</p>
+{% endif %}
+{% endblock %}

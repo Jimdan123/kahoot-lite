@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Add Question to "{{ question_set.name }}"</h2>
+<form method="POST" class="col-md-8">
+    {{ form.hidden_tag() }}
+    <div class="mb-3">
+        {{ form.text.label(class='form-label') }}
+        {{ form.text(class='form-control', rows=2) }}
+    </div>
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            {{ form.option_a.label(class='form-label') }}
+            {{ form.option_a(class='form-control') }}
+        </div>
+        <div class="col-md-6 mb-3">
+            {{ form.option_b.label(class='form-label') }}
+            {{ form.option_b(class='form-control') }}
+        </div>
+        <div class="col-md-6 mb-3">
+            {{ form.option_c.label(class='form-label') }}
+            {{ form.option_c(class='form-control') }}
+        </div>
+        <div class="col-md-6 mb-3">
+            {{ form.option_d.label(class='form-label') }}
+            {{ form.option_d(class='form-control') }}
+        </div>
+    </div>
+    <div class="mb-3">
+        <label class="form-label">Correct answer</label>
+        <div>
+            {% for sub in form.correct_option %}
+                <span class="me-3">{{ sub }} {{ sub.label.text }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="mb-3">
+        {{ form.time_limit.label(class='form-label') }}
+        {{ form.time_limit(class='form-control', style='max-width: 200px') }}
+    </div>
+    {{ form.submit(class='btn btn-primary') }}
+    <a href="{{ url_for('quiz.detail', set_id=question_set.id) }}" class="btn btn-outline-secondary">Back</a>
+</form>
+{% endblock %}

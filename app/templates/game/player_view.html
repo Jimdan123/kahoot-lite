@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% block content %}
+<div id="waiting">
+    <div class="text-center py-5">
+        <h3>Waiting for the game to start</h3>
+        <p>You're in as <strong>{{ nickname }}</strong></p>
+        <div class="spinner-border text-primary mt-3" role="status"></div>
+    </div>
+</div>
+
+<div id="question" style="display:none">
+    <h4 id="q-text"></h4>
+    <p>Time left: <span id="timer" class="fs-4"></span>s</p>
+    <div id="q-options" class="row g-3 my-3"></div>
+    <div id="answer-status" class="text-muted"></div>
+</div>
+
+<div id="reveal" style="display:none">
+    <h3 id="reveal-msg"></h3>
+    <p>Your score: <span id="my-score" class="fs-4">0</span></p>
+    <h4>Leaderboard</h4>
+    <ol id="leaderboard" class="list-group list-group-numbered"></ol>
+    <p class="text-muted mt-3">Waiting for host to continue...</p>
+</div>
+
+<div id="done" style="display:none">
+    <div class="text-center">
+        <h2>Game Over</h2>
+        <h4>Final Standings</h4>
+        <ol id="final-leaderboard" class="list-group list-group-numbered"></ol>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PIN = "{{ pin }}";
+const NICKNAME = "{{ nickname }}";
+const socket = io();
+let myScore = 0;
+let timerInterval = null;
+
+socket.on('connect', () => socket.emit('player_join', {pin: PIN, nickname: NICKNAME}));
+
+socket.on('question_start', (q) => {
+    showOnly('question');
+    document.getElementById('q-text').textContent = q.text;
+    const opts = document.getElementById('q-options');
+    opts.innerHTML = '';
+    for (const [key, val] of Object.entries(q.options)) {
+        const col = document.createElement('div');
+        col.className = 'col-md-6';
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-outline-primary btn-lg w-100 text-start';
+        btn.dataset.choice = key;
+        btn.textContent = key + '. ' + val;
+        btn.onclick = () => {
+            socket.emit('submit_answer', {pin: PIN, choice: key});
+            document.querySelectorAll('#q-options button').forEach(b => b.disabled = true);
+            btn.classList.replace('btn-outline-primary', 'btn-primary');
+            document.getElementById('answer-status').textContent = 'Answer submitted. Waiting for results...';
+        };
+        col.appendChild(btn);
+        opts.appendChild(col);
+    }
+    document.getElementById('answer-status').textContent = '';
+    startTimer(q.time_limit);
+});
+
+socket.on('answer_ack', (data) => {
+    myScore = data.total;
+    const status = document.getElementById('answer-status');
+    status.textContent = (data.correct ? 'Correct! ' : 'Wrong. ') + '+' + data.earned + ' points (total: ' + data.total + ')';
+});
+
+socket.on('question_reveal', (data) => {
+    stopTimer();
+    showOnly('reveal');
+    document.getElementById('reveal-msg').textContent = 'Correct answer: ' + data.correct_option;
+    document.getElementById('my-score').textContent = myScore;
+    renderLeaderboard('leaderboard', data.leaderboard);
+});
+
+socket.on('game_over', (data) => {
+    showOnly('done');
+    renderLeaderboard('final-leaderboard', data.leaderboard);
+});
+
+socket.on('error', (data) => {
+    alert(data.message);
+});
+
+function renderLeaderboard(elemId, board) {
+    const ol = document.getElementById(elemId);
+    ol.innerHTML = '';
+    board.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between';
+        const name = document.createElement('span');
+        name.textContent = p.nickname;
+        const score = document.createElement('strong');
+        score.textContent = p.score;
+        li.appendChild(name);
+        li.appendChild(score);
+        ol.appendChild(li);
+    });
+}
+
+function startTimer(seconds) {
+    let remaining = seconds;
+    document.getElementById('timer').textContent = remaining;
+    timerInterval = setInterval(() => {
+        remaining -= 1;
+        document.getElementById('timer').textContent = remaining;
+        if (remaining <= 0) stopTimer();
+    }, 1000);
+}
+
+function stopTimer() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function showOnly(id) {
+    for (const sec of ['waiting', 'question', 'reveal', 'done']) {
+        document.getElementById(sec).style.display = (sec === id) ? 'block' : 'none';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>{{ question_set.name }}</h2>
+<p class="text-muted">{{ question_set.description }}</p>
+<div class="mb-3">
+    <a href="{{ url_for('quiz.new_question', set_id=question_set.id) }}" class="btn btn-primary">+ Add Question</a>
+    {% if question_set.questions.count() > 0 %}
+    <form method="POST" action="{{ url_for('game.create_room', set_id=question_set.id) }}" class="d-inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-success">Host a Game</button>
+    </form>
+    {% endif %}
+    <form method="POST" action="{{ url_for('quiz.delete_set', set_id=question_set.id) }}" class="d-inline" onsubmit="return confirm('Delete this set and all its questions?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-outline-danger">Delete Set</button>
+    </form>
+</div>
+<hr>
+<ol>
+    {% for q in question_set.questions %}
+    <li class="mb-3">
+        <strong>{{ q.text }}</strong>
+        <ul class="list-unstyled ms-3">
+            {% for k, v in q.options().items() %}
+                {% if v %}
+                <li>{{ k }}. {{ v }} {% if k == q.correct_option %}<span class="badge bg-success">correct</span>{% endif %}</li>
+                {% endif %}
+            {% endfor %}
+        </ul>
+        <small class="text-muted">Time limit: {{ q.time_limit }}s</small>
+    </li>
+    {% endfor %}
+</ol>
+{% endblock %}

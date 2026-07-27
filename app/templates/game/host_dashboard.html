@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Host a Room</h2>
+<p class="text-muted">Pick a question set to start a game.</p>
+{% if question_sets %}
+<div class="row g-3">
+    {% for qs in question_sets %}
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5>{{ qs.name }}</h5>
+                <p class="small">{{ qs.questions.count() }} question(s)</p>
+                {% if qs.questions.count() > 0 %}
+                <form method="POST" action="{{ url_for('game.create_room', set_id=qs.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-success">Host Game</button>
+                </form>
+                {% else %}
+                <span class="text-muted small">Empty — add questions first</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p>You have no question sets. <a href="{{ url_for('quiz.new_set') }}">Create one first</a>.</p>
+{% endif %}
+{% endblock %}

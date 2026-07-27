@@ -1,0 +1,135 @@
+{% extends 'base.html' %}
+{% block content %}
+<div id="lobby">
+    <div class="text-center">
+        <p class="text-muted mb-0">Game PIN</p>
+        <h1 class="display-1 pin-display">{{ room.pin }}</h1>
+        <p>Players join at <code>{{ join_url }}</code></p>
+        <img src="{{ qr_data_uri }}" alt="Join QR" style="max-width: 240px;" class="my-3">
+    </div>
+    <hr>
+    <h4>Players (<span id="player-count">0</span>)</h4>
+    <ul id="player-list" class="list-group mb-3"></ul>
+    <button id="start-btn" class="btn btn-lg btn-success" disabled>Start Game</button>
+</div>
+
+<div id="question" style="display:none">
+    <p class="text-muted">Question <span id="q-index"></span> of <span id="q-total"></span></p>
+    <h2 id="q-text"></h2>
+    <div id="q-options" class="row g-3 my-3"></div>
+    <p>Time left: <span id="timer" class="fs-4"></span>s</p>
+    <button id="reveal-btn" class="btn btn-warning">Reveal Answer</button>
+</div>
+
+<div id="reveal" style="display:none">
+    <h3>Correct answer: <span id="correct" class="badge bg-success"></span></h3>
+    <h4 class="mt-4">Leaderboard</h4>
+    <ol id="leaderboard" class="list-group list-group-numbered"></ol>
+    <button id="next-btn" class="btn btn-primary mt-3">Next Question</button>
+</div>
+
+<div id="done" style="display:none">
+    <h2>Game Over</h2>
+    <h4>Final Leaderboard</h4>
+    <ol id="final-leaderboard" class="list-group list-group-numbered"></ol>
+    <a href="{{ url_for('game.host_dashboard') }}" class="btn btn-primary mt-3">Back to Dashboard</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PIN = "{{ room.pin }}";
+const socket = io();
+let timerInterval = null;
+
+socket.on('connect', () => socket.emit('host_join', {pin: PIN}));
+
+socket.on('player_list', (players) => {
+    const list = document.getElementById('player-list');
+    list.innerHTML = '';
+    players.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = p.nickname;
+        list.appendChild(li);
+    });
+    document.getElementById('player-count').textContent = players.length;
+    document.getElementById('start-btn').disabled = players.length === 0;
+});
+
+document.getElementById('start-btn').onclick = () => socket.emit('start_game', {pin: PIN});
+
+socket.on('question_start', (q) => {
+    showOnly('question');
+    document.getElementById('q-index').textContent = q.index + 1;
+    document.getElementById('q-total').textContent = q.total;
+    document.getElementById('q-text').textContent = q.text;
+    const opts = document.getElementById('q-options');
+    opts.innerHTML = '';
+    for (const [key, val] of Object.entries(q.options)) {
+        const col = document.createElement('div');
+        col.className = 'col-md-6';
+        const card = document.createElement('div');
+        card.className = 'card p-3';
+        card.innerHTML = '<strong></strong> <span></span>';
+        card.querySelector('strong').textContent = key + '.';
+        card.querySelector('span').textContent = ' ' + val;
+        col.appendChild(card);
+        opts.appendChild(col);
+    }
+    startTimer(q.time_limit);
+});
+
+document.getElementById('reveal-btn').onclick = () => socket.emit('reveal_answer', {pin: PIN});
+
+socket.on('question_reveal', (data) => {
+    stopTimer();
+    showOnly('reveal');
+    document.getElementById('correct').textContent = data.correct_option;
+    renderLeaderboard('leaderboard', data.leaderboard);
+});
+
+document.getElementById('next-btn').onclick = () => socket.emit('next_question', {pin: PIN});
+
+socket.on('game_over', (data) => {
+    showOnly('done');
+    renderLeaderboard('final-leaderboard', data.leaderboard);
+});
+
+function renderLeaderboard(elemId, board) {
+    const ol = document.getElementById(elemId);
+    ol.innerHTML = '';
+    board.forEach(p => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between';
+        const name = document.createElement('span');
+        name.textContent = p.nickname;
+        const score = document.createElement('strong');
+        score.textContent = p.score;
+        li.appendChild(name);
+        li.appendChild(score);
+        ol.appendChild(li);
+    });
+}
+
+function startTimer(seconds) {
+    let remaining = seconds;
+    document.getElementById('timer').textContent = remaining;
+    timerInterval = setInterval(() => {
+        remaining -= 1;
+        document.getElementById('timer').textContent = remaining;
+        if (remaining <= 0) stopTimer();
+    }, 1000);
+}
+
+function stopTimer() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function showOnly(id) {
+    for (const sec of ['lobby', 'question', 'reveal', 'done']) {
+        document.getElementById(sec).style.display = (sec === id) ? 'block' : 'none';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-body">
+                <h3>Join a Game</h3>
+                <form method="POST">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="mb-3">
+                        <label class="form-label">Game PIN</label>
+                        <input name="pin" class="form-control form-control-lg pin-display text-center" value="{{ pin }}" maxlength="6" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Nickname</label>
+                        <input name="nickname" class="form-control" value="{{ nickname }}" maxlength="20" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-lg w-100">Join</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
