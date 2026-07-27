@@ -25,14 +25,23 @@ Requires ANTHROPIC_API_KEY in the environment. See .env.example.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import sys
 from typing import Callable, List, Optional, TypedDict
 
 import pdfplumber
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
+
+log = logging.getLogger('kahoot.ai')
+if not log.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter('[ai] %(message)s'))
+    log.addHandler(_handler)
+    log.setLevel(logging.INFO)
 
 
 # ---- Tunables --------------------------------------------------------------
@@ -44,6 +53,8 @@ MAX_RETRIES = 2
 DEFAULT_TIME_LIMIT = 20                  # seconds per generated question
 LLM_MODEL = 'claude-sonnet-4-6'          # fast + good enough for MCQ drafting
 LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually differ
+LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
+MAX_CHUNKS_PER_RUN = 20                  # hard cap so a big PDF doesn't cost a fortune
 
 
 # ---- State -----------------------------------------------------------------
@@ -77,7 +88,9 @@ def _extract_text(state: PipelineState) -> dict:
             pages = [p.extract_text() or '' for p in pdf.pages]
         text = '\n\n'.join(pages).strip()
     except Exception as exc:  # corrupt PDF, wrong file type, etc.
+        log.error(f'PDF extract failed: {exc!r}')
         return {'error': f'Could not read PDF: {exc}'}
+    log.info(f'extract_text: {len(text)} chars from {len(pages)} pages')
     if not text:
         return {'error': 'PDF contained no extractable text (scanned image?)'}
     return {'raw_text': text}
@@ -92,10 +105,13 @@ def _chunk_by_topic(state: PipelineState) -> dict:
         ' '.join(words[i:i + CHUNK_WORDS])
         for i in range(0, len(words), CHUNK_WORDS)
     ]
-    # Only keep chunks with at least a paragraph of content
     chunks = [c for c in chunks if len(c.split()) > 40]
+    # Hard cap so a 100-page PDF doesn't burn 100 LLM calls
+    chunks = chunks[:MAX_CHUNKS_PER_RUN]
+    log.info(f'chunk_by_topic produced {len(chunks)} chunks')
     if not chunks:
-        return {'error': 'PDF text too short to generate questions from'}
+        return {'error': 'PDF text too short to generate questions from '
+                         '(need at least a paragraph of extractable text).'}
     return {'chunks': chunks}
 
 
@@ -120,21 +136,46 @@ Respond with a single JSON array. No prose, no code fences. Each element:
 
 
 def _generate_questions(state: PipelineState) -> dict:
-    _emit(state, 'Drafting questions…', 0.4)
-    llm = _make_llm()
+    n_chunks = len(state['chunks'])
+    _emit(state, f'Connecting to Claude (0/{n_chunks})…', 0.3)
+    try:
+        llm = _make_llm()
+    except Exception as exc:
+        # Fatal: can't make the client at all (bad model name, missing/invalid key).
+        log.error(f'ChatAnthropic init failed: {exc!r}')
+        return {'error': f'Could not initialize Claude client: {exc}'}
+
     drafts: List[dict] = []
+    first_error: Optional[str] = None
+    fail_count = 0
+
     for i, chunk in enumerate(state['chunks']):
+        _emit(state, f'Drafting questions ({i}/{n_chunks})…',
+              0.35 + 0.35 * i / max(n_chunks, 1))
         try:
             resp = llm.invoke([
                 SystemMessage(content=_GENERATE_SYSTEM.format(n=QUESTIONS_PER_CHUNK)),
                 HumanMessage(content=f'Passage:\n\n{chunk}'),
             ])
-            drafts.extend(_parse_llm_json(resp.content))
-        except Exception:
-            # One bad chunk doesn't kill the whole run.
+            parsed = _parse_llm_json(resp.content)
+            log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
+            drafts.extend(parsed)
+        except Exception as exc:
+            # One bad chunk doesn't kill the run, but keep the FIRST error
+            # so we can surface something useful if EVERY chunk fails.
+            fail_count += 1
+            if first_error is None:
+                first_error = f'{type(exc).__name__}: {exc}'
+            log.warning(f'chunk {i + 1}/{n_chunks} failed: {first_error}')
             continue
-        _emit(state, f'Drafting questions… ({i + 1}/{len(state["chunks"])})',
-              0.4 + 0.3 * (i + 1) / len(state['chunks']))
+
+    _emit(state, f'Drafted {len(drafts)} candidate questions.', 0.7)
+
+    # If every chunk failed we should tell the user WHY, not just silently
+    # return an empty draft list that a retry loop will also fail on.
+    if not drafts and first_error and fail_count == n_chunks:
+        return {'draft_questions': [], 'error': f'All LLM calls failed. First error: {first_error}'}
+
     return {'draft_questions': drafts}
 
 
@@ -299,16 +340,25 @@ def run_pipeline(
         'retry_count': 0,
         'progress_cb': progress_cb,
     }
+    log.info(f'run_pipeline starting: pdf={pdf_path} owner={owner_id}')
     final = _graph().invoke(initial)
     if final.get('error'):
+        log.error(f'run_pipeline error: {final["error"]}')
         raise RuntimeError(final['error'])
+    log.info(f'run_pipeline done: question_set_id={final.get("question_set_id")}')
     return final['question_set_id']
 
 
 # ---- Helpers ---------------------------------------------------------------
 
 def _make_llm(temperature: float = LLM_TEMPERATURE):
-    return ChatAnthropic(model=LLM_MODEL, temperature=temperature, max_tokens=2048)
+    return ChatAnthropic(
+        model=LLM_MODEL,
+        temperature=temperature,
+        max_tokens=2048,
+        timeout=LLM_TIMEOUT_SECONDS,
+        max_retries=1,
+    )
 
 
 def _emit(state: PipelineState, message: str, progress: float) -> None:
