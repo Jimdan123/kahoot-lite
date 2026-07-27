@@ -37,7 +37,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce() }}">
 const PIN = "{{ room.pin }}";
 const socket = io();
 let timerInterval = null;

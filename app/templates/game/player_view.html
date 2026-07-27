@@ -33,7 +33,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce() }}">
 const PIN = "{{ pin }}";
 const NICKNAME = "{{ nickname }}";
 const socket = io();
