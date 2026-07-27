@@ -91,6 +91,8 @@ gh repo create kahoot-lite --public --source=. --push
 
 The QR codes in `/game/host/<pin>` will automatically use that public URL, so players anywhere in the world can scan them and join.
 
+**Python version:** pinned to 3.12.7 via `.python-version` and `runtime.txt` because `eventlet` (the WebSocket worker) doesn't support Python 3.14 yet. If you ever bump the version, verify eventlet compatibility first.
+
 **Caveats on the free tier:**
 - App **sleeps after 15 min of inactivity** (~30s cold start on next request)
 - SQLite lives on the container filesystem, which is **ephemeral** — the DB resets on every redeploy. Fine for a demo; for anything permanent, upgrade to Render's free Postgres and set `DATABASE_URL` accordingly.
