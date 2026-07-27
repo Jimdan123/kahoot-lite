@@ -527,29 +527,99 @@ is created and cached in `room.questions`.
 
 ## 12. Where AI fits in (Part 1.2)
 
-Not yet implemented. `app/ai/langgraph_flow.py` is a stub sketching the
-planned LangGraph pipeline:
+The pipeline is live at `/ai/upload`. Hosts upload a PDF; the server runs a
+LangGraph agent that extracts text, drafts MCQs, has a second LLM pass
+grade them, retries once or twice if too few pass, and saves the survivors
+as a new `QuestionSet` in the same table as manually-created ones — so the
+game loop doesn't know or care where the questions came from.
+
+### The graph
 
 ```
-PDF upload
-   ↓
-1. extract_text          (pdfplumber)
-   ↓
-2. chunk_by_topic         (~500-word sections)
-   ↓
-3. generate_questions     (LLM: 3 MCQs per chunk)
-   ↓
-4. quality_check          (LLM validates; conditional edge retries on fail)
-   ↓
-5. dedupe & format
-   ↓
-6. save                   (creates a QuestionSet the host can review)
+   extract_text  ─────►  chunk_by_topic  ─────►  generate_questions  ◄────┐
+                                                          │               │
+                                                          ▼               │
+                                                    quality_check         │
+                                                     │        │           │
+                                       enough pass  ▼        ▼  too few   │
+                                                   save     bump_retry ───┘
+                                                    │        (loops back
+                                                    ▼         to generate,
+                                                   END        capped at 2)
 ```
 
-The LangGraph agent runs asynchronously — the browser uploads a PDF, the
-pipeline runs on the server, the host is notified when a new question set
-appears in their list. Uses the same `QuestionSet` model as manually created
-sets, so the game loop is completely unaware of the origin.
+Each node is a function `PipelineState → dict-of-updates`. The conditional
+edge after `quality_check` inspects `len(validated_questions) < MIN` and
+`retry_count < 2` to decide whether to loop or save.
+
+### Nodes, in order
+
+1. **extract_text** — `pdfplumber.open(...)`, concatenate pages. Fails
+   cleanly on scanned PDFs (no extractable text) with a state.error.
+2. **chunk_by_topic** — split by ~500 words. Drop chunks with fewer than
+   40 words (too thin to make MCQs from).
+3. **generate_questions** — for each chunk, call Claude (Sonnet 4.6,
+   `temperature=0.4`) with a system prompt asking for 3 MCQs as strict
+   JSON. One bad chunk skips silently rather than killing the run.
+4. **quality_check** — another Claude call (`temperature=0.0`) grades the
+   whole batch as an array of pass/fail booleans. Failing questions are
+   dropped. Duplicates (by question text, case-insensitive) collapse.
+5. **_should_retry** (conditional edge) — if fewer than 5 questions
+   survived and we've retried less than twice, jump to `bump_retry` →
+   `generate_questions` again. Otherwise proceed to `save`.
+6. **save** — write a new `QuestionSet` + `Question` rows in one
+   transaction. Returns `question_set_id` to the caller.
+
+### Async execution
+
+The pipeline takes 20-60 seconds — too long to hold an HTTP request open
+on Render's free tier (which caps requests at 30s). So:
+
+```
+POST /ai/upload  ─► validate PDF (magic bytes, size, extension)
+                 ─► save under a UUID filename in instance/uploads/
+                 ─► jobs.create(owner_id=current_user.id) → job_id
+                 ─► socketio.start_background_task(_worker)
+                 ─► 302 to /ai/processing/<job_id>
+
+background _worker:
+    with app.app_context():
+        run_pipeline(pdf_path, owner_id,
+                     progress_cb=lambda msg, pct: jobs.update(...))
+        jobs.mark_done(job_id, question_set_id)
+    then: delete the uploaded PDF from disk
+
+/ai/processing/<job_id>   ─► HTML page that polls…
+/ai/status/<job_id>       ─► JSON: {status, message, progress, redirect?}
+                             every 1.5s. On done → JS window.location = redirect.
+```
+
+`jobs` is a simple in-memory registry (`app/ai/jobs.py`), one dict, TTL of
+30 minutes after completion. A restart drops in-flight jobs — acceptable
+for a class demo; a real deployment would move this to Redis / Celery.
+
+### PDF security
+
+Upload is behind the same layered defenses as the rest of the app, plus:
+
+- **Magic-byte check** — reject anything whose first 5 bytes aren't `%PDF-`,
+  regardless of extension or Content-Type
+- **10 MB size cap** (`MAX_PDF_BYTES`) enforced both via
+  `MAX_CONTENT_LENGTH` in config and a manual size check for a friendlier
+  error than a 413
+- **Server-generated filename** — never trust the browser's, defeats
+  directory traversal
+- **Rate limited** — 5 uploads per hour, 2 per minute per IP (LLM calls are
+  expensive; this is more of a wallet defense than a security defense)
+- **Auto-cleanup** — the saved PDF is deleted from disk after the pipeline
+  finishes, whether success or failure
+
+### Config
+
+Set `ANTHROPIC_API_KEY` in `.env` locally, or in Render's Environment tab
+in production. `run_pipeline` raises `RuntimeError` if the key is missing,
+which the `_worker` catches and surfaces via `jobs.mark_failed`, so the
+user sees a clean error on the processing page instead of a 500.
 
 ---
 

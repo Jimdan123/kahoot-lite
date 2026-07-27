@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-7">
+        <div class="card p-4">
+            <h3>Generating questions…</h3>
+            <p class="text-muted small">Job <code>{{ job.job_id }}</code></p>
+
+            <div id="status-message" class="mb-2">Starting…</div>
+            <div class="progress mb-3" style="height: 24px;">
+                <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: 0%;">0%</div>
+            </div>
+
+            <div id="failure" class="alert alert-danger d-none"></div>
+
+            <p class="text-muted small mb-0">
+                Keep this tab open. The pipeline can take up to a minute for
+                larger PDFs — retries add a bit more.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce() }}">
+const JOB_ID = "{{ job.job_id }}";
+const STATUS_URL = "{{ url_for('ai.status', job_id=job.job_id) }}";
+
+const msg = document.getElementById('status-message');
+const bar = document.getElementById('progress-bar');
+const fail = document.getElementById('failure');
+
+async function poll() {
+    try {
+        const resp = await fetch(STATUS_URL, {credentials: 'same-origin'});
+        if (!resp.ok) throw new Error('status ' + resp.status);
+        const data = await resp.json();
+
+        msg.textContent = data.message || data.status;
+        const pct = Math.round((data.progress || 0) * 100);
+        bar.style.width = pct + '%';
+        bar.textContent = pct + '%';
+
+        if (data.status === 'done' && data.redirect) {
+            bar.classList.remove('progress-bar-animated');
+            msg.textContent = 'Done — opening the new question set…';
+            setTimeout(() => { window.location = data.redirect; }, 500);
+            return;
+        }
+        if (data.status === 'failed') {
+            bar.classList.remove('progress-bar-animated');
+            bar.classList.add('bg-danger');
+            fail.classList.remove('d-none');
+            fail.textContent = data.error || 'Pipeline failed.';
+            return;
+        }
+    } catch (e) {
+        msg.textContent = 'Lost connection to server, retrying…';
+    }
+    setTimeout(poll, 1500);
+}
+poll();
+</script>
+{% endblock %}

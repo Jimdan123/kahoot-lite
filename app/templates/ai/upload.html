@@ -1,8 +1,43 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2>Generate Questions from PDF</h2>
-<div class="alert alert-info">
-    Part 1.2 — coming soon. Will use LangGraph + Claude to turn a PDF into a question set.
+<div class="row justify-content-center">
+    <div class="col-md-7">
+        <h2>Generate Questions from PDF</h2>
+        <p class="text-muted">
+            Upload study material (PDF). The AI pipeline extracts the text,
+            drafts multiple-choice questions, checks each for quality, and
+            saves the survivors as a new question set you can review and edit
+            before hosting.
+        </p>
+
+        {% if not enabled %}
+        <div class="alert alert-warning">
+            <strong>Anthropic API key not set.</strong>
+            Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code> (locally) or
+            in Render's Environment tab (deploy). Uploads will fail without it.
+        </div>
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data" class="card p-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="mb-3">
+                <label class="form-label">PDF file (max 10 MB)</label>
+                <input type="file" name="pdf" accept="application/pdf,.pdf" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Question set name (optional)</label>
+                <input type="text" name="name" class="form-control" maxlength="200" placeholder="e.g. Chapter 3 Review">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Description (optional)</label>
+                <textarea name="description" class="form-control" rows="2" maxlength="500"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg">Generate</button>
+            <p class="text-muted mt-3 mb-0 small">
+                Processing usually takes 20-60 seconds depending on document size.
+                You'll be redirected to a status page while the pipeline runs.
+            </p>
+        </form>
+    </div>
 </div>
-<a href="{{ url_for('quiz.index') }}" class="btn btn-primary">Back to Question Sets</a>
 {% endblock %}

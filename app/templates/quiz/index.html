@@ -2,7 +2,10 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>My Question Sets</h2>
-    <a href="{{ url_for('quiz.new_set') }}" class="btn btn-primary">+ New Question Set</a>
+    <div>
+        <a href="{{ url_for('ai.upload') }}" class="btn btn-outline-primary">Generate from PDF</a>
+        <a href="{{ url_for('quiz.new_set') }}" class="btn btn-primary">+ New Question Set</a>
+    </div>
 </div>
 {% if question_sets %}
 <div class="row g-3">
