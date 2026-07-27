@@ -79,6 +79,17 @@ socket.on('question_start', (q) => {
     }
     document.getElementById('answer-status').textContent = '';
     startTimer(q.time_limit);
+    // If this is a rejoin after answering, freeze the buttons to reflect
+    // the previous choice so the player can't submit again.
+    if (q.resumed_answer) {
+        document.querySelectorAll('#q-options button').forEach(b => {
+            b.disabled = true;
+            if (b.dataset.choice === q.resumed_answer) {
+                b.classList.replace('btn-outline-primary', 'btn-primary');
+            }
+        });
+        document.getElementById('answer-status').textContent = 'Reconnected — your previous answer is locked in.';
+    }
 });
 
 socket.on('answer_ack', (data) => {

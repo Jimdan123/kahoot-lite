@@ -32,30 +32,56 @@ def on_host_join(data):
     emit('player_list', _player_list(room))
 
 
+def _token_matches(supplied, expected) -> bool:
+    """Timing-safe compare that tolerates non-string junk from the wire.
+    secrets.compare_digest raises TypeError on non-ASCII strings or non-strings,
+    so we normalize before calling it — otherwise a malformed payload becomes
+    an unhandled exception instead of a clean rejection."""
+    if not isinstance(supplied, str) or not isinstance(expected, str) or not expected:
+        return False
+    try:
+        return secrets.compare_digest(supplied, expected)
+    except TypeError:
+        return False
+
+
 @socketio.on('player_join')
 def on_player_join(data):
     pin = data.get('pin')
     nickname = (data.get('nickname') or '').strip()[:20]
-    supplied_token = data.get('rejoin_token') or ''
+    supplied_token = data.get('rejoin_token')
     room = game_service.get_room(pin)
     if not room or not nickname:
         emit('error', {'message': 'Cannot join this room'})
         return
 
-    existing = next((p for p in room.players.values() if p.nickname == nickname), None)
-    if existing:
-        # Nickname taken. Only the socket that got the original rejoin_token
-        # can reclaim it — nicknames are public (broadcast in player_list),
-        # so we cannot treat name-match as identity proof.
-        if not supplied_token or not secrets.compare_digest(supplied_token, existing.rejoin_token):
+    # Three legitimate paths:
+    #   1. Same-tab reload while still active → active-nickname match, needs token
+    #   2. Reconnect after a mid-game disconnect → orphan match, needs token
+    #   3. Brand-new player during lobby → mint a fresh token
+    active = room.find_active_by_nickname(nickname)
+    orphan = None if active else room.orphans.get(nickname)
+
+    if active:
+        if not _token_matches(supplied_token, active.rejoin_token):
             emit('error', {'message': 'Nickname is already taken in this room'})
             return
-        room.remove_player(existing.sid)
+        room.remove_player(active.sid)
         player = room.add_player(request.sid, nickname)
-        player.rejoin_token = existing.rejoin_token  # keep the same secret across reconnects
-        player.score = existing.score
-        player.last_answer = existing.last_answer
-        player.last_answer_correct = existing.last_answer_correct
+        player.rejoin_token = active.rejoin_token
+        player.score = active.score
+        player.last_answer = active.last_answer
+        player.last_answer_correct = active.last_answer_correct
+    elif orphan:
+        if not _token_matches(supplied_token, orphan.rejoin_token):
+            emit('error', {'message': 'Nickname is already taken in this room'})
+            return
+        room.take_orphan(nickname)
+        player = room.add_player(request.sid, nickname)
+        player.rejoin_token = orphan.rejoin_token
+        player.score = orphan.score
+        player.last_answer = orphan.last_answer
+        player.last_answer_correct = orphan.last_answer_correct
     elif room.state != 'lobby':
         emit('error', {'message': 'Game already in progress'})
         return
@@ -63,11 +89,16 @@ def on_player_join(data):
         player = room.add_player(request.sid, nickname)
         player.rejoin_token = secrets.token_urlsafe(24)
 
+    room.touch()
     join_room(pin)
-    # rejoin_token is emitted only to this socket (default target), never
-    # included in the broadcast player_list.
+    # rejoin_token goes only to this socket; player_list broadcast omits it.
     emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
     emit('player_list', _player_list(room), to=pin)
+
+    # If this was a reconnect into a game-in-progress room, catch this socket
+    # up to the current state so it isn't stranded on the waiting screen.
+    if active or orphan:
+        _resume_state_for(room, player)
 
 
 @socketio.on('start_game')
@@ -130,11 +161,19 @@ def on_disconnect():
         if request.sid == room.host_sid:
             room.host_sid = None
         elif request.sid in room.players:
-            room.remove_player(request.sid)
+            # In the lobby a disconnect is a genuine leave — no score to
+            # preserve, so drop the player outright. Mid-game, move them to
+            # the orphan pool so a reconnect presenting the correct
+            # rejoin_token can restore their state.
+            if room.state == 'lobby':
+                room.remove_player(request.sid)
+            else:
+                room.orphan_player(request.sid)
             emit('player_list', _player_list(room), to=room.pin)
 
 
 def _advance_to_question(room, index):
+    room.touch()  # keep a live game from being swept as idle
     room.current_index = index
     room.state = 'question'
     room.question_start_time = time.time()
@@ -166,6 +205,7 @@ def _reveal(room):
 
 def _end_game(room):
     room.state = 'done'
+    room.finished_at = time.time()  # starts the grace clock before the reaper sweeps it
     emit('game_over', {'leaderboard': room.leaderboard()}, to=room.pin)
 
 
@@ -179,3 +219,31 @@ def _room_state(room):
 
 def _player_list(room):
     return [{'nickname': p.nickname} for p in room.players.values()]
+
+
+def _resume_state_for(room, player):
+    """Emit just to the current socket enough state to render the current
+    game phase, so a reconnected player lands on the right screen instead of
+    the initial waiting spinner."""
+    if room.state == 'question':
+        q = room.current_question()
+        if q is not None:
+            emit('question_start', {
+                'index': room.current_index,
+                'total': len(room.questions),
+                'text': q['text'],
+                'options': q['options'],
+                'time_limit': q['time_limit'],
+                # None if they hadn't answered yet; their previous choice
+                # otherwise, so the client can lock the buttons.
+                'resumed_answer': player.last_answer,
+            })
+    elif room.state == 'reveal':
+        q = room.current_question()
+        if q is not None:
+            emit('question_reveal', {
+                'correct_option': q['correct_option'],
+                'leaderboard': room.leaderboard(),
+            })
+    elif room.state == 'done':
+        emit('game_over', {'leaderboard': room.leaderboard()})

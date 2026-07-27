@@ -1,7 +1,8 @@
 import os
 from flask import Flask
+from werkzeug.middleware.proxy_fix import ProxyFix
 from config import config
-from app.extensions import db, socketio, login_manager, csrf
+from app.extensions import db, socketio, login_manager, csrf, limiter
 
 
 def create_app(config_name='default'):
@@ -13,9 +14,15 @@ def create_app(config_name='default'):
     if config_name == 'production' and not os.environ.get('SECRET_KEY'):
         raise RuntimeError('SECRET_KEY environment variable is required in production')
 
+    # On Render (and most PaaS) the app sits behind one reverse proxy that sets
+    # X-Forwarded-For. Trust exactly that one hop so the rate limiter sees each
+    # client's real IP instead of throttling everyone as the shared proxy IP.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
     app.config['UPLOAD_FOLDER'].mkdir(parents=True, exist_ok=True)
 
     db.init_app(app)
+    limiter.init_app(app)
     # async_mode auto-detected: threading locally, gevent under the
     # GeventWebSocketWorker in production. See README's deployment section.
     # CORS defaults to '*' for local dev; production should restrict it via
@@ -37,6 +44,12 @@ def create_app(config_name='default'):
     app.register_blueprint(quiz_bp, url_prefix='/quiz')
     app.register_blueprint(game_bp, url_prefix='/game')
     app.register_blueprint(ai_bp, url_prefix='/ai')
+
+    # In-memory game rooms never free themselves otherwise: a finished or
+    # abandoned room would sit in the registry until the process restarts,
+    # leaking memory. This background greenlet sweeps them periodically.
+    from app.game import game_service
+    socketio.start_background_task(game_service.reaper_loop, socketio)
 
     with app.app_context():
         from app import models  # noqa: F401 — register models with SQLAlchemy
