@@ -68,10 +68,33 @@ run.py                entry point
 instance/             runtime files (SQLite DB, uploads) — gitignored
 ```
 
-## Deployment (later)
+## Deploy to Render (public URL, free tier)
 
-Deploy to [Render](https://render.com/) — free tier supports WebSockets.
-Set `FLASK_CONFIG=production` and provide `SECRET_KEY` + `DATABASE_URL` as env vars.
+Prereqs: a free GitHub account and a free Render account.
+
+**1. Push this repo to GitHub**
+
+```bash
+gh repo create kahoot-lite --public --source=. --push
+# or if you don't have gh CLI: create a repo on github.com, then:
+#   git remote add origin https://github.com/<you>/kahoot-lite.git
+#   git branch -M main && git push -u origin main
+```
+
+**2. Deploy on Render**
+
+- Log in at https://render.com
+- Click **New +** → **Blueprint**
+- Connect your GitHub repo — Render will detect `render.yaml` and provision everything
+- Wait ~2 minutes for the first build
+- Your app is live at `https://kahoot-lite-<random>.onrender.com`
+
+The QR codes in `/game/host/<pin>` will automatically use that public URL, so players anywhere in the world can scan them and join.
+
+**Caveats on the free tier:**
+- App **sleeps after 15 min of inactivity** (~30s cold start on next request)
+- SQLite lives on the container filesystem, which is **ephemeral** — the DB resets on every redeploy. Fine for a demo; for anything permanent, upgrade to Render's free Postgres and set `DATABASE_URL` accordingly.
+- One worker only. For a class demo this is plenty; scaling requires Redis for shared room state.
 
 ## References
 See `RESOURCES.md` for the full curated learning path.
