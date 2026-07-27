@@ -36,10 +36,23 @@ def on_player_join(data):
     pin = data.get('pin')
     nickname = (data.get('nickname') or '').strip()[:20]
     room = game_service.get_room(pin)
-    if not room or room.state != 'lobby' or not nickname:
+    if not room or not nickname:
         emit('error', {'message': 'Cannot join this room'})
         return
-    room.add_player(request.sid, nickname)
+    # Rejoin by nickname: swap the socket in place, keep score/answer state.
+    # This covers page reloads, second tabs, and network-drop reconnects.
+    existing = next((p for p in room.players.values() if p.nickname == nickname), None)
+    if existing:
+        room.remove_player(existing.sid)
+        rejoined = room.add_player(request.sid, nickname)
+        rejoined.score = existing.score
+        rejoined.last_answer = existing.last_answer
+        rejoined.last_answer_correct = existing.last_answer_correct
+    elif room.state != 'lobby':
+        emit('error', {'message': 'Game already in progress'})
+        return
+    else:
+        room.add_player(request.sid, nickname)
     join_room(pin)
     emit('joined', {'nickname': nickname})
     emit('player_list', _player_list(room), to=pin)
