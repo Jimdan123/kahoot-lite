@@ -42,4 +42,17 @@ def create_app(config_name='default'):
         from app import models  # noqa: F401 — register models with SQLAlchemy
         db.create_all()
 
+        # Boot-time diagnostic: which DB engine we actually ended up on.
+        # One line in Render's log — makes it obvious whether the deployed
+        # app is on persistent Postgres or ephemeral SQLite.
+        import sys
+        engine = db.engine.dialect.name  # 'postgresql' or 'sqlite'
+        print(
+            f'[boot] DATABASE={engine} '
+            f'persistent={engine == "postgresql"} '
+            f'DATABASE_URL_set={bool(os.environ.get("DATABASE_URL"))}',
+            file=sys.stderr,
+            flush=True,
+        )
+
     return app

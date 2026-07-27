@@ -40,7 +40,21 @@ const socket = io();
 let myScore = 0;
 let timerInterval = null;
 
-socket.on('connect', () => socket.emit('player_join', {pin: PIN, nickname: NICKNAME}));
+// Rejoin token: persisted per (pin, nickname) so reloads and network-drop
+// reconnects can reclaim this exact player slot. Attackers who see the
+// nickname in the public player_list broadcast do NOT get the token.
+const REJOIN_KEY = 'kahoot_rejoin_' + PIN + '_' + NICKNAME;
+
+socket.on('connect', () => {
+    const rejoin_token = localStorage.getItem(REJOIN_KEY) || undefined;
+    socket.emit('player_join', {pin: PIN, nickname: NICKNAME, rejoin_token});
+});
+
+socket.on('joined', (data) => {
+    if (data.rejoin_token) {
+        localStorage.setItem(REJOIN_KEY, data.rejoin_token);
+    }
+});
 
 socket.on('question_start', (q) => {
     showOnly('question');

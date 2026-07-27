@@ -15,6 +15,10 @@ from typing import Dict, List, Optional
 class Player:
     sid: str
     nickname: str
+    # Random per-player secret returned only to this player's socket on first
+    # join. Required to reclaim the nickname on reconnect. Blocks nickname
+    # impersonation since nicknames are broadcast publicly.
+    rejoin_token: str = ''
     score: int = 0
     last_answer: Optional[str] = None
     last_answer_correct: Optional[bool] = None

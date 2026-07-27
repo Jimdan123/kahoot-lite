@@ -1,3 +1,4 @@
+import secrets
 import time
 from flask import request
 from flask_login import current_user
@@ -35,26 +36,37 @@ def on_host_join(data):
 def on_player_join(data):
     pin = data.get('pin')
     nickname = (data.get('nickname') or '').strip()[:20]
+    supplied_token = data.get('rejoin_token') or ''
     room = game_service.get_room(pin)
     if not room or not nickname:
         emit('error', {'message': 'Cannot join this room'})
         return
-    # Rejoin by nickname: swap the socket in place, keep score/answer state.
-    # This covers page reloads, second tabs, and network-drop reconnects.
+
     existing = next((p for p in room.players.values() if p.nickname == nickname), None)
     if existing:
+        # Nickname taken. Only the socket that got the original rejoin_token
+        # can reclaim it — nicknames are public (broadcast in player_list),
+        # so we cannot treat name-match as identity proof.
+        if not supplied_token or not secrets.compare_digest(supplied_token, existing.rejoin_token):
+            emit('error', {'message': 'Nickname is already taken in this room'})
+            return
         room.remove_player(existing.sid)
-        rejoined = room.add_player(request.sid, nickname)
-        rejoined.score = existing.score
-        rejoined.last_answer = existing.last_answer
-        rejoined.last_answer_correct = existing.last_answer_correct
+        player = room.add_player(request.sid, nickname)
+        player.rejoin_token = existing.rejoin_token  # keep the same secret across reconnects
+        player.score = existing.score
+        player.last_answer = existing.last_answer
+        player.last_answer_correct = existing.last_answer_correct
     elif room.state != 'lobby':
         emit('error', {'message': 'Game already in progress'})
         return
     else:
-        room.add_player(request.sid, nickname)
+        player = room.add_player(request.sid, nickname)
+        player.rejoin_token = secrets.token_urlsafe(24)
+
     join_room(pin)
-    emit('joined', {'nickname': nickname})
+    # rejoin_token is emitted only to this socket (default target), never
+    # included in the broadcast player_list.
+    emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
     emit('player_list', _player_list(room), to=pin)
 
 
