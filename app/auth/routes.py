@@ -1,10 +1,25 @@
-from urllib.parse import urlparse
 from flask import render_template, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
 from app.auth import auth_bp
 from app.auth.forms import LoginForm, SignupForm
 from app.extensions import db
 from app.models import User
+
+
+def _is_safe_next(target):
+    """
+    Reject anything but a strict host-relative path.
+
+    A single leading '/' is required; '//foo' and '/\\foo' are rejected because
+    browsers can resolve them to a different origin. This is stricter than a
+    netloc check because urlsplit reports an empty netloc for edge cases like
+    '////evil.com' and 'https:/evil.com' that browsers still resolve off-origin.
+    """
+    if not target or not target.startswith('/'):
+        return False
+    if target.startswith('//') or target.startswith('/\\'):
+        return False
+    return True
 
 
 @auth_bp.route('/signup', methods=['GET', 'POST'])
@@ -33,7 +48,7 @@ def login():
         if user and user.check_password(form.password.data):
             login_user(user)
             next_page = request.args.get('next')
-            if not next_page or urlparse(next_page).netloc != '':
+            if not _is_safe_next(next_page):
                 next_page = url_for('main.index')
             return redirect(next_page)
         flash('Invalid email or password', 'danger')

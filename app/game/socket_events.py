@@ -1,8 +1,14 @@
 import time
 from flask import request
+from flask_login import current_user
 from flask_socketio import emit, join_room
 from app.extensions import socketio
 from app.game import game_service
+
+
+# Grace period (seconds) beyond a question's time_limit within which the server
+# still accepts an answer, to absorb network jitter. Late answers are dropped.
+ANSWER_GRACE_SECONDS = 1.0
 
 
 @socketio.on('host_join')
@@ -10,6 +16,14 @@ def on_host_join(data):
     room = game_service.get_room(data.get('pin'))
     if not room:
         emit('error', {'message': 'Room not found'})
+        return
+    if not current_user.is_authenticated or current_user.id != room.owner_id:
+        emit('error', {'message': 'Not authorized to host this room'})
+        return
+    if request.sid in room.players:
+        # A socket that has joined as a player cannot also claim host,
+        # which would give it both roles.
+        emit('error', {'message': 'This socket is already a player in the room'})
         return
     room.host_sid = request.sid
     join_room(room.pin)
@@ -51,8 +65,12 @@ def on_submit_answer(data):
     if q is None:
         return
     choice = data.get('choice')
-    is_correct = (choice == q['correct_option'])
     elapsed = time.time() - (room.question_start_time or time.time())
+    if elapsed > q['time_limit'] + ANSWER_GRACE_SECONDS:
+        # Server-side deadline: reject late submissions so the client-side
+        # timer cannot be bypassed for free points.
+        return
+    is_correct = (choice == q['correct_option'])
     earned = game_service.calculate_score(is_correct, elapsed, q['time_limit'])
     player.last_answer = choice
     player.last_answer_correct = is_correct
@@ -110,8 +128,10 @@ def _advance_to_question(room, index):
 
 
 def _reveal(room):
-    room.state = 'reveal'
     q = room.current_question()
+    if q is None:
+        return  # nothing to reveal (e.g. host called reveal in the lobby)
+    room.state = 'reveal'
     emit(
         'question_reveal',
         {'correct_option': q['correct_option'], 'leaderboard': room.leaderboard()},

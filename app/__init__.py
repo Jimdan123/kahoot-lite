@@ -1,3 +1,4 @@
+import os
 from flask import Flask
 from config import config
 from app.extensions import db, socketio, login_manager, csrf
@@ -7,12 +8,20 @@ def create_app(config_name='default'):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
 
+    # Fail fast in production if the operator forgot to set SECRET_KEY —
+    # a predictable dev key in prod would let anyone forge session cookies.
+    if config_name == 'production' and not os.environ.get('SECRET_KEY'):
+        raise RuntimeError('SECRET_KEY environment variable is required in production')
+
     app.config['UPLOAD_FOLDER'].mkdir(parents=True, exist_ok=True)
 
     db.init_app(app)
     # async_mode auto-detected: threading locally, gevent under the
     # GeventWebSocketWorker in production. See README's deployment section.
-    socketio.init_app(app, cors_allowed_origins='*')
+    # CORS defaults to '*' for local dev; production should restrict it via
+    # CORS_ALLOWED_ORIGINS (e.g. https://your-app.onrender.com).
+    cors_origins = os.environ.get('CORS_ALLOWED_ORIGINS', '*')
+    socketio.init_app(app, cors_allowed_origins=cors_origins)
     login_manager.init_app(app)
     csrf.init_app(app)
     login_manager.login_view = 'auth.login'

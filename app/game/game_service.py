@@ -24,6 +24,7 @@ class Player:
 class Room:
     pin: str
     question_set_id: int
+    owner_id: int  # id of the User who created the room; only they can host
     questions: List[dict]
     host_sid: Optional[str] = None
     players: Dict[str, Player] = field(default_factory=dict)
@@ -52,9 +53,9 @@ class Room:
 _rooms: Dict[str, Room] = {}
 
 
-def create_room(question_set_id: int, questions: List[dict]) -> Room:
+def create_room(question_set_id: int, owner_id: int, questions: List[dict]) -> Room:
     pin = _generate_unique_pin()
-    room = Room(pin=pin, question_set_id=question_set_id, questions=questions)
+    room = Room(pin=pin, question_set_id=question_set_id, owner_id=owner_id, questions=questions)
     _rooms[pin] = room
     return room
 

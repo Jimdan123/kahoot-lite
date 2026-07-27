@@ -25,7 +25,7 @@ def create_room(set_id):
         flash('Add questions before hosting a game.', 'warning')
         return redirect(url_for('quiz.detail', set_id=qs.id))
     questions_data = [_serialize_question(q) for q in qs.questions]
-    room = game_service.create_room(qs.id, questions_data)
+    room = game_service.create_room(qs.id, current_user.id, questions_data)
     return redirect(url_for('game.host_view', pin=room.pin))
 
 
@@ -36,6 +36,8 @@ def host_view(pin):
     if not room:
         flash('Room not found (may have expired).', 'warning')
         return redirect(url_for('game.host_dashboard'))
+    if room.owner_id != current_user.id:
+        abort(403)
     join_url = url_for('game.join', pin=pin, _external=True)
     qr_data_uri = _make_qr_data_uri(join_url)
     return render_template('game/host_view.html', room=room, join_url=join_url, qr_data_uri=qr_data_uri)
