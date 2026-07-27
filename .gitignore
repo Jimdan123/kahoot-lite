@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual env
+venv/
+.venv/
+env/
+ENV/
+
+# Environment / secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
+# Instance folder (SQLite DB, uploaded PDFs)
+instance/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ruff / linters
+.ruff_cache/
