@@ -12,10 +12,18 @@
 
         {% if not enabled %}
         <div class="alert alert-warning">
-            <strong>Anthropic API key not set.</strong>
-            Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code> (locally) or
-            in Render's Environment tab (deploy). Uploads will fail without it.
+            <strong>No LLM API key configured.</strong>
+            The pipeline needs one of:
+            <ul class="mb-0 mt-2">
+                <li><code>GOOGLE_API_KEY</code> — free at
+                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a> (recommended)</li>
+                <li><code>ANTHROPIC_API_KEY</code> — from
+                    <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a></li>
+            </ul>
+            Add to <code>.env</code> (locally) or Render's Environment tab (deploy).
         </div>
+        {% else %}
+        <p class="text-muted small">Using provider: <strong>{{ provider }}</strong></p>
         {% endif %}
 
         <form method="POST" enctype="multipart/form-data" class="card p-4">

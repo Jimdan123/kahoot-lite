@@ -35,9 +35,11 @@ PDF_MAGIC = b'%PDF-'
 @limiter.limit('5 per hour; 2 per minute', methods=['POST'])
 def upload():
     if request.method == 'GET':
+        from app.ai.langgraph_flow import _which_provider
         return render_template(
             'ai/upload.html',
-            enabled=bool(os.environ.get('ANTHROPIC_API_KEY')),
+            enabled=_which_provider() is not None,
+            provider=_which_provider(),
         )
 
     # --- POST: validate and start ---

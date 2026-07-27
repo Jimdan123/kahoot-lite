@@ -32,7 +32,6 @@ import sys
 from typing import Callable, List, Optional, TypedDict
 
 import pdfplumber
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
@@ -51,10 +50,22 @@ QUESTIONS_PER_CHUNK = 3                  # asked of the LLM per chunk
 MIN_ACCEPTED_QUESTIONS = 5               # else we retry the generate step
 MAX_RETRIES = 2
 DEFAULT_TIME_LIMIT = 20                  # seconds per generated question
-LLM_MODEL = 'claude-sonnet-4-6'          # fast + good enough for MCQ drafting
 LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually differ
 LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
 MAX_CHUNKS_PER_RUN = 20                  # hard cap so a big PDF doesn't cost a fortune
+
+# Provider dispatch is driven by whichever API key env var is set. Google
+# Gemini is preferred (free tier, no credit card) with Anthropic as fallback.
+DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
+DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6'
+
+
+def _which_provider() -> Optional[str]:
+    if os.environ.get('GOOGLE_API_KEY'):
+        return 'google'
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        return 'anthropic'
+    return None
 
 
 # ---- State -----------------------------------------------------------------
@@ -327,10 +338,10 @@ def run_pipeline(
     order of tens of seconds for a small PDF, minutes for a large one.
     Raises RuntimeError on any fatal state['error'].
     """
-    if not os.environ.get('ANTHROPIC_API_KEY'):
+    if _which_provider() is None:
         raise RuntimeError(
-            'ANTHROPIC_API_KEY is not set. Add it to .env or the Render '
-            'environment before using the PDF pipeline.'
+            'No LLM API key configured. Set GOOGLE_API_KEY (free at '
+            'https://aistudio.google.com/apikey) or ANTHROPIC_API_KEY.'
         )
     initial: PipelineState = {
         'pdf_path': pdf_path,
@@ -352,12 +363,32 @@ def run_pipeline(
 # ---- Helpers ---------------------------------------------------------------
 
 def _make_llm(temperature: float = LLM_TEMPERATURE):
-    return ChatAnthropic(
-        model=LLM_MODEL,
-        temperature=temperature,
-        max_tokens=2048,
-        timeout=LLM_TIMEOUT_SECONDS,
-        max_retries=1,
+    """
+    Pick a chat model based on which API key is in the environment.
+    Google Gemini is preferred (free tier is generous and needs no card);
+    Anthropic Claude is used if only its key is set. See .env.example.
+    """
+    provider = _which_provider()
+    if provider == 'google':
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=os.environ.get('GEMINI_MODEL', DEFAULT_GEMINI_MODEL),
+            temperature=temperature,
+            max_output_tokens=2048,
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    if provider == 'anthropic':
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=os.environ.get('CLAUDE_MODEL', DEFAULT_CLAUDE_MODEL),
+            temperature=temperature,
+            max_tokens=2048,
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=1,
+        )
+    raise RuntimeError(
+        'No LLM API key configured. Set GOOGLE_API_KEY (get one free at '
+        'https://aistudio.google.com/apikey) or ANTHROPIC_API_KEY.'
     )
 
 

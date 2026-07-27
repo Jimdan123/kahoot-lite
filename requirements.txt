@@ -17,8 +17,9 @@ email-validator>=2.0.0
 
 # Part 1.2 — PDF → question set pipeline
 langgraph>=0.2.0
-langchain-anthropic>=0.2.0
 langchain-core>=0.3.0
+langchain-google-genai>=2.0.0
+langchain-anthropic>=0.2.0
 pdfplumber>=0.11.0
 
 # Dev tools

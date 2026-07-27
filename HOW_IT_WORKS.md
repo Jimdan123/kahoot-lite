@@ -614,12 +614,22 @@ Upload is behind the same layered defenses as the rest of the app, plus:
 - **Auto-cleanup** — the saved PDF is deleted from disk after the pipeline
   finishes, whether success or failure
 
-### Config
+### LLM provider
 
-Set `ANTHROPIC_API_KEY` in `.env` locally, or in Render's Environment tab
-in production. `run_pipeline` raises `RuntimeError` if the key is missing,
-which the `_worker` catches and surfaces via `jobs.mark_failed`, so the
-user sees a clean error on the processing page instead of a 500.
+The pipeline picks its LLM client based on which key is in the environment:
+
+| Env var | Client | Model default |
+|---|---|---|
+| `GOOGLE_API_KEY` (preferred) | `ChatGoogleGenerativeAI` | `gemini-2.5-flash` |
+| `ANTHROPIC_API_KEY` (fallback) | `ChatAnthropic` | `claude-sonnet-4-6` |
+
+Gemini is preferred because its free tier is generous and needs no credit
+card (get a key at https://aistudio.google.com/apikey). Anthropic is used
+only if `GOOGLE_API_KEY` is unset. Models can be overridden via
+`GEMINI_MODEL` / `CLAUDE_MODEL`. If neither key is set, `run_pipeline`
+raises `RuntimeError` early — the `_worker` catches it and surfaces the
+message via `jobs.mark_failed`, so the user sees a clean error on the
+processing page instead of a 500.
 
 ---
 
