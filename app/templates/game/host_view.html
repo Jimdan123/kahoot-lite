@@ -52,18 +52,53 @@ let currentTimeLimit = 20;
 
 socket.on('connect', () => socket.emit('host_join', {pin: PIN}));
 
+// Full snapshot: only sent once, when this host socket connects/reconnects
+// (see on_host_join server-side) — the resync point for whatever the room's
+// actual roster is. Every join/leave after that arrives as a small delta
+// (player_joined / player_left below) instead of the whole list again, so a
+// burst of N joins costs O(N) total instead of O(N^2).
 socket.on('player_list', (players) => {
     const list = document.getElementById('player-list');
     list.innerHTML = '';
-    players.forEach(p => {
-        const chip = document.createElement('span');
-        chip.className = 'chip';
-        chip.textContent = p.nickname;
-        list.appendChild(chip);
-    });
-    document.getElementById('player-count').textContent = players.length;
-    document.getElementById('start-btn').disabled = players.length === 0;
+    players.forEach(p => addPlayerChip(p.nickname));
+    updatePlayerCount();
 });
+
+socket.on('player_joined', (data) => {
+    // Dedupe by nickname: the same-tab-reload edge case in on_player_join
+    // can fire this for a nickname the host's list never actually lost,
+    // so blindly appending would create a visible duplicate chip.
+    if (!findPlayerChip(data.nickname)) {
+        addPlayerChip(data.nickname);
+        updatePlayerCount();
+    }
+});
+
+socket.on('player_left', (data) => {
+    const chip = findPlayerChip(data.nickname);
+    if (chip) {
+        chip.remove();
+        updatePlayerCount();
+    }
+});
+
+function findPlayerChip(nickname) {
+    return Array.from(document.getElementById('player-list').children)
+        .find(el => el.textContent === nickname);
+}
+
+function addPlayerChip(nickname) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = nickname;
+    document.getElementById('player-list').appendChild(chip);
+}
+
+function updatePlayerCount() {
+    const count = document.getElementById('player-list').children.length;
+    document.getElementById('player-count').textContent = count;
+    document.getElementById('start-btn').disabled = count === 0;
+}
 
 document.getElementById('start-btn').onclick = (e) => {
     e.target.disabled = true;

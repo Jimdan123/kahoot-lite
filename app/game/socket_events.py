@@ -96,9 +96,19 @@ def on_player_join(data):
 
     room.touch()
     join_room(pin)
-    # rejoin_token goes only to this socket; player_list broadcast omits it.
+    # rejoin_token goes only to this socket, never broadcast.
     emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
-    socketio.emit('player_list', _player_list(room), room=pin)
+    # Incremental delta, not a full-roster resend: rebuilding and broadcasting
+    # the whole player list on every single join is O(n) work times O(n)
+    # joins — the room's actual O(n^2) bottleneck under a burst of joins
+    # (worse than the nickname lookup this replaced, since it's real socket
+    # I/O to every connected player, not just an in-memory scan). The host's
+    # own full snapshot (host_join, above) is the only resync point needed;
+    # everyone already in the room just needs to hear about the one player
+    # who changed. The client dedupes by nickname, so the rare case where a
+    # still-active reconnect fires this again for a nickname it never saw
+    # leave (see the `active` branch above) is harmless, not a duplicate.
+    socketio.emit('player_joined', {'nickname': nickname}, room=pin)
 
     # If this was a reconnect into a game-in-progress room, catch this socket
     # up to the current state so it isn't stranded on the waiting screen.
@@ -188,6 +198,7 @@ def on_disconnect():
         if request.sid == room.host_sid:
             room.host_sid = None
         elif request.sid in room.players:
+            nickname = room.players[request.sid].nickname
             # In the lobby a disconnect is a genuine leave — no score to
             # preserve, so drop the player outright. Mid-game, move them to
             # the orphan pool so a reconnect presenting the correct
@@ -196,7 +207,8 @@ def on_disconnect():
                 room.remove_player(request.sid)
             else:
                 room.orphan_player(request.sid)
-            socketio.emit('player_list', _player_list(room), room=room.pin)
+            # Same delta-not-snapshot reasoning as on_player_join.
+            socketio.emit('player_left', {'nickname': nickname}, room=room.pin)
 
 
 def _advance_to_question(room, index):

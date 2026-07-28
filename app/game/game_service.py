@@ -42,6 +42,11 @@ class Room:
     host_sid: Optional[str] = None
     # Active sockets keyed by socket id.
     players: Dict[str, Player] = field(default_factory=dict)
+    # Secondary index (nickname -> Player) mirroring `players`, so
+    # find_active_by_nickname is O(1) instead of scanning every player on
+    # every join. Kept in sync by add_player/remove_player/orphan_player —
+    # never write to this directly, go through those methods.
+    _by_nickname: Dict[str, Player] = field(default_factory=dict, repr=False)
     # Players that disconnected mid-game (keyed by nickname). Their score,
     # last_answer, and rejoin_token are preserved so a reconnect presenting
     # the matching token can restore them without data loss.
@@ -59,15 +64,19 @@ class Room:
     def add_player(self, sid: str, nickname: str) -> Player:
         p = Player(sid=sid, nickname=nickname)
         self.players[sid] = p
+        self._by_nickname[nickname] = p
         return p
 
     def remove_player(self, sid: str) -> None:
-        self.players.pop(sid, None)
+        p = self.players.pop(sid, None)
+        if p is not None:
+            self._by_nickname.pop(p.nickname, None)
 
     def orphan_player(self, sid: str) -> Optional[Player]:
         """Move an active player to the orphan pool (called on disconnect)."""
         p = self.players.pop(sid, None)
         if p is not None:
+            self._by_nickname.pop(p.nickname, None)
             self.orphans[p.nickname] = p
         return p
 
@@ -76,10 +85,7 @@ class Room:
         return self.orphans.pop(nickname, None)
 
     def find_active_by_nickname(self, nickname: str) -> Optional[Player]:
-        for p in self.players.values():
-            if p.nickname == nickname:
-                return p
-        return None
+        return self._by_nickname.get(nickname)
 
     def current_question(self) -> Optional[dict]:
         if 0 <= self.current_index < len(self.questions):
