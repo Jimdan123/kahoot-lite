@@ -80,8 +80,7 @@ Sequenced by when to read:
 
 ## 🤖 AI pipeline for Part 1.2
 
-- 🎯 [Anthropic Claude API — Getting Started](https://docs.anthropic.com/en/docs/get-started) *(recommended provider)*
-- 📖 [OpenAI API Quickstart](https://platform.openai.com/docs/quickstart) *(alternative)*
+- 🎯 [Google Gemini API — Getting Started](https://ai.google.dev/gemini-api/docs) *(provider used)*
 - 🎯 [pdfplumber (GitHub)](https://github.com/jsvine/pdfplumber) *(simplest PDF extraction)*
 - 🎯 [LangGraph Quickstart](https://langchain-ai.github.io/langgraph/tutorials/introduction/)
 
@@ -121,7 +120,7 @@ Sequenced by when to read:
 | **3. Flask core** | While building the web app | ~5 hrs | Flask Mega-Tutorial Ch. 1-5, 7, 15 |
 | **4. Real-time** | Adding live gameplay | ~2 hrs | Flask-SocketIO |
 | **5. Deploy** | When ready to ship | ~1 hr | Render docs |
-| **6. AI pipeline** | Part 1.2 after 1.1 works | ~3 hrs | LangGraph + Claude API + pdfplumber |
+| **6. AI pipeline** | Part 1.2 after 1.1 works | ~3 hrs | LangGraph + Gemini API + pdfplumber |
 
 ---
 

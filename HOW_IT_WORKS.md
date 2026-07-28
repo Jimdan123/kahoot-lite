@@ -558,10 +558,10 @@ edge after `quality_check` inspects `len(validated_questions) < MIN` and
    cleanly on scanned PDFs (no extractable text) with a state.error.
 2. **chunk_by_topic** — split by ~500 words. Drop chunks with fewer than
    40 words (too thin to make MCQs from).
-3. **generate_questions** — for each chunk, call Claude (Sonnet 4.6,
+3. **generate_questions** — for each chunk, call Gemini (2.5 Flash,
    `temperature=0.4`) with a system prompt asking for 3 MCQs as strict
    JSON. One bad chunk skips silently rather than killing the run.
-4. **quality_check** — another Claude call (`temperature=0.0`) grades the
+4. **quality_check** — another Gemini call (`temperature=0.0`) grades the
    whole batch as an array of pass/fail booleans. Failing questions are
    dropped. Duplicates (by question text, case-insensitive) collapse.
 5. **_should_retry** (conditional edge) — if fewer than 5 questions
@@ -616,20 +616,18 @@ Upload is behind the same layered defenses as the rest of the app, plus:
 
 ### LLM provider
 
-The pipeline picks its LLM client based on which key is in the environment:
+The pipeline runs on Google Gemini:
 
 | Env var | Client | Model default |
 |---|---|---|
-| `GOOGLE_API_KEY` (preferred) | `ChatGoogleGenerativeAI` | `gemini-2.5-flash` |
-| `ANTHROPIC_API_KEY` (fallback) | `ChatAnthropic` | `claude-sonnet-4-6` |
+| `GOOGLE_API_KEY` | `ChatGoogleGenerativeAI` | `gemini-2.5-flash` |
 
-Gemini is preferred because its free tier is generous and needs no credit
-card (get a key at https://aistudio.google.com/apikey). Anthropic is used
-only if `GOOGLE_API_KEY` is unset. Models can be overridden via
-`GEMINI_MODEL` / `CLAUDE_MODEL`. If neither key is set, `run_pipeline`
-raises `RuntimeError` early — the `_worker` catches it and surfaces the
-message via `jobs.mark_failed`, so the user sees a clean error on the
-processing page instead of a 500.
+Gemini's free tier is generous and needs no credit card (get a key at
+https://aistudio.google.com/apikey). The model can be overridden via
+`GEMINI_MODEL`. If the key isn't set, `run_pipeline` raises `RuntimeError`
+early — the `_worker` catches it and surfaces the message via
+`jobs.mark_failed`, so the user sees a clean error on the processing page
+instead of a 500.
 
 ---
 

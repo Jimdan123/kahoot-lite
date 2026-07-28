@@ -20,7 +20,7 @@ generation gets another shot at the LLM before we give up.
 State flows one direction through the graph; each node returns a partial
 dict that gets merged into the accumulated state.
 
-Requires ANTHROPIC_API_KEY in the environment. See .env.example.
+Requires GOOGLE_API_KEY (Google Gemini) in the environment. See .env.example.
 """
 from __future__ import annotations
 
@@ -54,17 +54,13 @@ LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually 
 LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
 MAX_CHUNKS_PER_RUN = 20                  # hard cap so a big PDF doesn't cost a fortune
 
-# Provider dispatch is driven by whichever API key env var is set. Google
-# Gemini is preferred (free tier, no credit card) with Anthropic as fallback.
+# Google Gemini — free tier, no credit card required.
 DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
-DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6'
 
 
 def _which_provider() -> Optional[str]:
     if os.environ.get('GOOGLE_API_KEY'):
         return 'google'
-    if os.environ.get('ANTHROPIC_API_KEY'):
-        return 'anthropic'
     return None
 
 
@@ -148,13 +144,13 @@ Respond with a single JSON array. No prose, no code fences. Each element:
 
 def _generate_questions(state: PipelineState) -> dict:
     n_chunks = len(state['chunks'])
-    _emit(state, f'Connecting to Claude (0/{n_chunks})…', 0.3)
+    _emit(state, f'Connecting to Gemini (0/{n_chunks})…', 0.3)
     try:
         llm = _make_llm()
     except Exception as exc:
         # Fatal: can't make the client at all (bad model name, missing/invalid key).
-        log.error(f'ChatAnthropic init failed: {exc!r}')
-        return {'error': f'Could not initialize Claude client: {exc}'}
+        log.error(f'ChatGoogleGenerativeAI init failed: {exc!r}')
+        return {'error': f'Could not initialize Gemini client: {exc}'}
 
     drafts: List[dict] = []
     first_error: Optional[str] = None
@@ -341,7 +337,7 @@ def run_pipeline(
     if _which_provider() is None:
         raise RuntimeError(
             'No LLM API key configured. Set GOOGLE_API_KEY (free at '
-            'https://aistudio.google.com/apikey) or ANTHROPIC_API_KEY.'
+            'https://aistudio.google.com/apikey).'
         )
     initial: PipelineState = {
         'pdf_path': pdf_path,
@@ -364,12 +360,9 @@ def run_pipeline(
 
 def _make_llm(temperature: float = LLM_TEMPERATURE):
     """
-    Pick a chat model based on which API key is in the environment.
-    Google Gemini is preferred (free tier is generous and needs no card);
-    Anthropic Claude is used if only its key is set. See .env.example.
+    Build the Gemini chat model. Requires GOOGLE_API_KEY. See .env.example.
     """
-    provider = _which_provider()
-    if provider == 'google':
+    if _which_provider() == 'google':
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
             model=os.environ.get('GEMINI_MODEL', DEFAULT_GEMINI_MODEL),
@@ -377,18 +370,9 @@ def _make_llm(temperature: float = LLM_TEMPERATURE):
             max_output_tokens=2048,
             timeout=LLM_TIMEOUT_SECONDS,
         )
-    if provider == 'anthropic':
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
-            model=os.environ.get('CLAUDE_MODEL', DEFAULT_CLAUDE_MODEL),
-            temperature=temperature,
-            max_tokens=2048,
-            timeout=LLM_TIMEOUT_SECONDS,
-            max_retries=1,
-        )
     raise RuntimeError(
         'No LLM API key configured. Set GOOGLE_API_KEY (get one free at '
-        'https://aistudio.google.com/apikey) or ANTHROPIC_API_KEY.'
+        'https://aistudio.google.com/apikey).'
     )
 
 
