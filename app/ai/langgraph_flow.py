@@ -53,9 +53,14 @@ DEFAULT_TIME_LIMIT = 20                  # seconds per generated question
 LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually differ
 LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
 MAX_CHUNKS_PER_RUN = 20                  # hard cap so a big PDF doesn't cost a fortune
+MAX_OCR_PAGES = 15                       # cap on pages sent through Gemini vision OCR
+OCR_RESOLUTION = 150                     # dpi for page-image rendering
 
 # Google Gemini — free tier, no credit card required.
-DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash'
+# Rolling alias so this doesn't rot when Google retires a dated model (which is
+# what broke this before — 'gemini-2.5-flash' returned 404 as "no longer
+# available to new users" despite still being listed in the models catalog).
+DEFAULT_GEMINI_MODEL = 'gemini-flash-latest'
 
 
 def _which_provider() -> Optional[str]:
@@ -94,13 +99,51 @@ def _extract_text(state: PipelineState) -> dict:
         with pdfplumber.open(state['pdf_path']) as pdf:
             pages = [p.extract_text() or '' for p in pdf.pages]
         text = '\n\n'.join(pages).strip()
-    except Exception as exc:  # corrupt PDF, wrong file type, etc.
+        page_count = len(pages)
+        if not text:
+            _emit(state, 'No text layer found — reading scanned pages via Gemini…', 0.15)
+            text = _ocr_via_gemini(state['pdf_path'])
+    except Exception as exc:  # corrupt PDF, wrong file type, LLM call failed, etc.
         log.error(f'PDF extract failed: {exc!r}')
         return {'error': f'Could not read PDF: {exc}'}
-    log.info(f'extract_text: {len(text)} chars from {len(pages)} pages')
+    log.info(f'extract_text: {len(text)} chars from {page_count} pages')
     if not text:
-        return {'error': 'PDF contained no extractable text (scanned image?)'}
+        return {'error': 'PDF contained no extractable text, even after OCR '
+                          '(image quality too low, or a blank/handwritten document?)'}
     return {'raw_text': text}
+
+
+_OCR_PROMPT = (
+    'Transcribe all readable text from this page image, verbatim, in reading '
+    'order. Output only the transcribed text — no commentary, no markdown '
+    'fences. If the page has no readable text, output nothing.'
+)
+
+
+def _ocr_via_gemini(pdf_path: str) -> str:
+    """
+    Fallback for scanned/image-only PDFs: pdfplumber found no text layer, so
+    render each page to an image and ask Gemini's vision model to read it.
+    """
+    import base64
+    from io import BytesIO
+
+    llm = _make_llm(temperature=0.0)
+    with pdfplumber.open(pdf_path) as pdf:
+        ocr_pages = pdf.pages[:MAX_OCR_PAGES]
+        page_texts = []
+        for i, page in enumerate(ocr_pages):
+            buf = BytesIO()
+            page.to_image(resolution=OCR_RESOLUTION).original.save(buf, format='PNG')
+            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            resp = llm.invoke([HumanMessage(content=[
+                {'type': 'text', 'text': _OCR_PROMPT},
+                {'type': 'image_url', 'image_url': f'data:image/png;base64,{b64}'},
+            ])])
+            page_text = (resp.content or '').strip()
+            log.info(f'ocr_via_gemini: page {i + 1}/{len(ocr_pages)} -> {len(page_text)} chars')
+            page_texts.append(page_text)
+    return '\n\n'.join(page_texts).strip()
 
 
 # ---- Node: chunk -----------------------------------------------------------
@@ -166,6 +209,14 @@ def _generate_questions(state: PipelineState) -> dict:
             ])
             parsed = _parse_llm_json(resp.content)
             log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
+            if not parsed:
+                # _parse_llm_json swallows malformed/prose/truncated JSON and
+                # returns [] rather than raising — without this branch that
+                # failure mode is invisible and the run just quietly starves.
+                raise ValueError(
+                    f'Gemini response was not parseable as JSON: '
+                    f'{str(resp.content)[:200]!r}'
+                )
             drafts.extend(parsed)
         except Exception as exc:
             # One bad chunk doesn't kill the run, but keep the FIRST error
@@ -183,7 +234,11 @@ def _generate_questions(state: PipelineState) -> dict:
     if not drafts and first_error and fail_count == n_chunks:
         return {'draft_questions': [], 'error': f'All LLM calls failed. First error: {first_error}'}
 
-    return {'draft_questions': drafts}
+    # Explicitly clear a stale error from an earlier failed attempt — LangGraph
+    # merges returned dicts into state and does not drop keys we don't return,
+    # so without this a retry that succeeds after a fully-failed first pass
+    # would still carry the old error through to run_pipeline's final check.
+    return {'draft_questions': drafts, 'error': None}
 
 
 # ---- Node: quality check ---------------------------------------------------
@@ -388,21 +443,42 @@ def _emit(state: PipelineState, message: str, progress: float) -> None:
 _JSON_FENCE_RE = re.compile(r'```(?:json)?\s*(.*?)```', re.DOTALL)
 
 
+def _content_to_text(raw) -> str:
+    """Normalize a LangChain message .content value to plain text.
+
+    Newer Gemini models return content as a list of block dicts
+    (e.g. [{'type': 'text', 'text': '...'}]) instead of a plain string —
+    without this, str(raw) on the list produces a Python-repr string
+    (single-quoted, escaped) that can never parse as JSON.
+    """
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts = []
+        for block in raw:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(block.get('text', ''))
+        return ''.join(parts)
+    return str(raw)
+
+
 def _parse_llm_json(raw):
     """Strip common LLM wrapper cruft (code fences, prose) and return the parsed JSON.
     Falls back to an empty list rather than raising, so one bad response doesn't kill the run."""
-    if not isinstance(raw, str):
-        raw = str(raw)
-    text = raw.strip()
+    text = _content_to_text(raw).strip()
     m = _JSON_FENCE_RE.search(text)
     if m:
         text = m.group(1).strip()
-    # If the model prefixed something like "Here are the questions:", find the first bracket.
-    for opener in ('[', '{'):
-        idx = text.find(opener)
-        if idx > 0:
-            text = text[idx:]
-            break
+    # If the model prefixed something like "Here are the questions:", find the
+    # earliest top-level bracket and strip everything before it. Must compare
+    # '[' and '{' together (not check one, then the other) — otherwise an
+    # array starting at index 0 falls through to the '{' check and gets
+    # truncated at its first nested object instead of left alone.
+    candidates = [i for i in (text.find('['), text.find('{')) if i != -1]
+    if candidates and min(candidates) > 0:
+        text = text[min(candidates):]
     try:
         return json.loads(text)
     except json.JSONDecodeError:
