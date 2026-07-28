@@ -3,31 +3,42 @@
 <div id="waiting">
     <div class="text-center py-5">
         <h3>Waiting for the game to start</h3>
-        <p>You're in as <strong>{{ nickname }}</strong></p>
-        <div class="spinner-border text-primary mt-3" role="status"></div>
+        <p class="text-muted">You're in as <strong>{{ nickname }}</strong></p>
+        <div class="spinner-border mt-3" role="status"></div>
     </div>
 </div>
 
-<div id="question" style="display:none">
-    <h4 id="q-text"></h4>
-    <p>Time left: <span id="timer" class="fs-4"></span>s</p>
-    <div id="q-options" class="row g-3 my-3"></div>
-    <div id="answer-status" class="text-muted"></div>
+<div id="question" class="gscreen" style="display:none">
+    <div class="kicker">
+        <span class="dot"></span>
+        <span id="q-progress"></span>
+        <span class="score-pop-wrap" style="margin-left:auto">
+            Score <span id="my-score-inline" class="score-value">0</span>
+        </span>
+    </div>
+    <div id="result-slot"></div>
+    <h4 id="q-text" class="q-text"></h4>
+    <div class="timer-row">
+        <span id="timer" class="timer-num"></span>
+        <div class="timer-track"><div id="timer-fill" class="timer-fill"></div></div>
+    </div>
+    <div id="q-options" class="opts-grid"></div>
 </div>
 
-<div id="reveal" style="display:none">
-    <h3 id="reveal-msg"></h3>
-    <p>Your score: <span id="my-score" class="fs-4">0</span></p>
-    <h4>Leaderboard</h4>
-    <ol id="leaderboard" class="list-group list-group-numbered"></ol>
-    <p class="text-muted mt-3">Waiting for host to continue...</p>
+<div id="reveal" class="gscreen" style="display:none">
+    <div class="kicker"><span class="dot"></span>Correct answer</div>
+    <h3 id="reveal-msg" style="margin:0 0 1rem;"></h3>
+    <p class="text-muted" style="margin:0 0 1.2rem;">Your score: <strong id="my-score" class="score-value">0</strong></p>
+    <h4 style="font-size:1rem; margin:0 0 .6rem;">Leaderboard</h4>
+    <ol id="leaderboard" class="board"></ol>
+    <p class="text-muted mt-3" style="margin-top:1rem;">Waiting for host to continue...</p>
 </div>
 
-<div id="done" style="display:none">
+<div id="done" class="gscreen" style="display:none">
     <div class="text-center">
         <h2>Game Over</h2>
-        <h4>Final Standings</h4>
-        <ol id="final-leaderboard" class="list-group list-group-numbered"></ol>
+        <h4 style="font-size:1rem;">Final Standings</h4>
+        <ol id="final-leaderboard" class="board"></ol>
     </div>
 </div>
 {% endblock %}
@@ -40,6 +51,7 @@ const socket = io();
 let myScore = 0;
 let timerInterval = null;
 let currentQuestionIndex = null;
+let currentTimeLimit = 20;
 
 // Rejoin token: persisted per (pin, nickname) so reloads and network-drop
 // reconnects can reclaim this exact player slot. Attackers who see the
@@ -59,56 +71,73 @@ socket.on('joined', (data) => {
 
 socket.on('question_start', (q) => {
     currentQuestionIndex = q.index;
+    currentTimeLimit = q.time_limit;
     showOnly('question');
+    document.getElementById('q-progress').textContent = 'Question ' + (q.index + 1) + ' of ' + q.total;
     document.getElementById('q-text').textContent = q.text;
+    document.getElementById('result-slot').innerHTML = '';
+    document.getElementById('my-score-inline').textContent = myScore;
+
     const opts = document.getElementById('q-options');
     opts.innerHTML = '';
+    const letters = ['a', 'b', 'c', 'd'];
+    let i = 0;
     for (const [key, val] of Object.entries(q.options)) {
-        const col = document.createElement('div');
-        col.className = 'col-md-6';
+        const letterClass = 'opt-' + (letters[i++] || 'a');
         const btn = document.createElement('button');
-        btn.className = 'btn btn-outline-primary btn-lg w-100 text-start';
+        btn.type = 'button';
+        btn.className = 'opt-btn ' + letterClass;
         btn.dataset.choice = key;
-        btn.textContent = key + '. ' + val;
+        btn.innerHTML = '<span class="opt-letter">' + key + '</span><span></span>';
+        btn.querySelector('span:last-child').textContent = val;
         btn.onclick = () => {
             socket.emit('submit_answer', {pin: PIN, choice: key, question_index: currentQuestionIndex});
-            document.querySelectorAll('#q-options button').forEach(b => b.disabled = true);
-            btn.classList.replace('btn-outline-primary', 'btn-primary');
-            document.getElementById('answer-status').textContent = 'Answer submitted. Waiting for results...';
+            document.querySelectorAll('#q-options .opt-btn').forEach(b => b.disabled = true);
+            btn.classList.add('opt-picked');
         };
-        col.appendChild(btn);
-        opts.appendChild(col);
+        opts.appendChild(btn);
     }
-    document.getElementById('answer-status').textContent = '';
-    // time_left is the server's authoritative remaining time as of this
-    // message (accounts for a mid-question reconnect); startTimer turns it
-    // into a local deadline so a backgrounded/throttled tab recomputes the
-    // correct value instead of drifting when it wakes back up.
+
     startTimer(q.time_left);
     // If this is a rejoin after answering, freeze the buttons to reflect
     // the previous choice so the player can't submit again.
     if (q.resumed_answer) {
-        document.querySelectorAll('#q-options button').forEach(b => {
+        document.querySelectorAll('#q-options .opt-btn').forEach(b => {
             b.disabled = true;
-            if (b.dataset.choice === q.resumed_answer) {
-                b.classList.replace('btn-outline-primary', 'btn-primary');
-            }
+            if (b.dataset.choice === q.resumed_answer) b.classList.add('opt-picked');
         });
-        document.getElementById('answer-status').textContent = 'Reconnected — your previous answer is locked in.';
+        document.getElementById('result-slot').innerHTML =
+            '<div class="result-banner late"><span class="result-icon">↺</span>Reconnected — your previous answer is locked in.</div>';
     }
 });
 
 socket.on('answer_ack', (data) => {
+    const picked = document.querySelector('#q-options .opt-picked');
+    if (picked) picked.classList.add(data.correct ? 'opt-correct' : 'opt-wrong');
+
+    const slot = document.getElementById('result-slot');
+    slot.innerHTML =
+        '<div class="result-banner ' + (data.correct ? 'correct' : 'wrong') + '">' +
+        '<span class="result-icon">' + (data.correct ? '✓' : '✕') + '</span>' +
+        (data.correct ? 'Correct! ' : 'Wrong. ') + '+' + data.earned + ' points' +
+        '</div>';
+
+    const scoreEl = document.getElementById('my-score-inline');
+    const wrap = scoreEl.closest('.score-pop-wrap');
+    spawnFloatPoints(wrap, '+' + data.earned, data.correct ? 'correct' : 'wrong');
+    animateNumber(scoreEl, myScore, data.total, 500);
+    scoreEl.classList.remove('bump'); void scoreEl.offsetWidth; scoreEl.classList.add('bump');
+
     myScore = data.total;
-    const status = document.getElementById('answer-status');
-    status.textContent = (data.correct ? 'Correct! ' : 'Wrong. ') + '+' + data.earned + ' points (total: ' + data.total + ')';
 });
 
 // Sent instead of answer_ack when a submission missed the server-side
 // deadline — without this the player was stuck on "Waiting for
 // results..." with no explanation until the next reveal, if one ever came.
 socket.on('answer_late', (data) => {
-    document.getElementById('answer-status').textContent = data.message || 'Too late — no points for that one.';
+    document.getElementById('result-slot').innerHTML =
+        '<div class="result-banner late"><span class="result-icon">!</span>' +
+        (data.message || 'Too late — no points for that one.') + '</div>';
 });
 
 socket.on('question_reveal', (data) => {
@@ -135,17 +164,49 @@ socket.on('error', (data) => {
 function renderLeaderboard(elemId, board) {
     const ol = document.getElementById(elemId);
     ol.innerHTML = '';
-    board.forEach(p => {
+    const maxScore = Math.max(1, ...board.map(p => p.score));
+    board.forEach((p, i) => {
         const li = document.createElement('li');
-        li.className = 'list-group-item d-flex justify-content-between';
-        const name = document.createElement('span');
-        name.textContent = p.nickname;
-        const score = document.createElement('strong');
-        score.textContent = p.score;
-        li.appendChild(name);
-        li.appendChild(score);
+        if (i === 0) li.classList.add('top');
+        li.style.animationDelay = (i * 90) + 'ms';
+        li.innerHTML =
+            '<div class="bb-fill"></div>' +
+            '<span class="bb-rank">' + (i + 1) + '</span>' +
+            '<span class="bb-name"></span>' +
+            '<strong class="bb-score">0</strong>';
+        li.querySelector('.bb-name').textContent = p.nickname;
         ol.appendChild(li);
+
+        const fill = li.querySelector('.bb-fill');
+        const scoreEl = li.querySelector('.bb-score');
+        const pct = (p.score / maxScore) * 100;
+        setTimeout(() => {
+            fill.style.width = pct + '%';
+            animateNumber(scoreEl, 0, p.score, 650);
+        }, i * 90 + 120);
     });
+}
+
+// Counts an element's textContent from `from` to `to` over `duration`ms —
+// the classic Kahoot "score rolling up" feel, done with rAF easing rather
+// than a plain setInterval so it stays smooth regardless of frame rate.
+function animateNumber(el, from, to, duration) {
+    const start = performance.now();
+    function tick(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        el.textContent = Math.round(from + (to - from) * eased);
+        if (t < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+}
+
+function spawnFloatPoints(wrapEl, text, cls) {
+    const span = document.createElement('span');
+    span.className = 'float-points ' + cls;
+    span.textContent = text;
+    wrapEl.appendChild(span);
+    span.addEventListener('animationend', () => span.remove());
 }
 
 function startTimer(secondsLeft) {
@@ -156,9 +217,14 @@ function startTimer(secondsLeft) {
     // setInterval when hidden) shows the correct value the moment it's
     // checked again, rather than a stale one that drifted while hidden.
     const deadline = Date.now() + secondsLeft * 1000;
+    const timerEl = document.getElementById('timer');
+    const fillEl = document.getElementById('timer-fill');
     const render = () => {
         const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        document.getElementById('timer').textContent = remaining;
+        timerEl.textContent = remaining;
+        const pct = Math.max(0, Math.min(100, (remaining / currentTimeLimit) * 100));
+        fillEl.style.width = pct + '%';
+        fillEl.classList.toggle('low', remaining <= 5);
         if (remaining <= 0) stopTimer();
     };
     render();

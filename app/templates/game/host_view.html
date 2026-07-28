@@ -1,38 +1,45 @@
 {% extends 'base.html' %}
 {% block content %}
-<div id="lobby">
+<div id="lobby" class="gscreen">
     <div class="text-center">
         <p class="text-muted mb-0">Game PIN</p>
         <h1 class="display-1 pin-display">{{ room.pin }}</h1>
-        <p>Players join at <code>{{ join_url }}</code></p>
-        <img src="{{ qr_data_uri }}" alt="Join QR" style="max-width: 240px;" class="my-3">
+        <p class="text-muted">Players join at <code>{{ join_url }}</code></p>
+        <img src="{{ qr_data_uri }}" alt="Join QR" style="max-width: 200px; border-radius:12px;" class="my-3">
     </div>
-    <hr>
-    <h4>Players (<span id="player-count">0</span>)</h4>
-    <ul id="player-list" class="list-group mb-3"></ul>
-    <button id="start-btn" class="btn btn-lg btn-success" disabled>Start Game</button>
+    <hr style="border-color:var(--line); opacity:1;">
+    <h4 style="font-size:1rem;">Players (<span id="player-count">0</span>)</h4>
+    <div id="player-list" style="display:flex; flex-wrap:wrap; gap:.5rem; margin-bottom:1.4rem;"></div>
+    <button id="start-btn" class="btn btn-lg btn-success" style="width:100%;" disabled>Start Game</button>
 </div>
 
-<div id="question" style="display:none">
-    <p class="text-muted">Question <span id="q-index"></span> of <span id="q-total"></span></p>
-    <h2 id="q-text"></h2>
-    <div id="q-options" class="row g-3 my-3"></div>
-    <p>Time left: <span id="timer" class="fs-4"></span>s</p>
+<div id="question" class="gscreen" style="display:none">
+    <div class="kicker"><span class="dot"></span><span id="q-progress"></span></div>
+    <h2 id="q-text" class="q-text" style="font-size:1.5rem;"></h2>
+    <div id="q-options" class="opts-grid" style="margin-bottom:1.3rem;"></div>
+    <div class="timer-row">
+        <span id="timer" class="timer-num"></span>
+        <div class="timer-track"><div id="timer-fill" class="timer-fill"></div></div>
+    </div>
     <button id="reveal-btn" class="btn btn-warning">Reveal Answer</button>
 </div>
 
-<div id="reveal" style="display:none">
-    <h3>Correct answer: <span id="correct" class="badge bg-success"></span></h3>
-    <h4 class="mt-4">Leaderboard</h4>
-    <ol id="leaderboard" class="list-group list-group-numbered"></ol>
-    <button id="next-btn" class="btn btn-primary mt-3">Next Question</button>
+<div id="reveal" class="gscreen" style="display:none">
+    <div class="kicker"><span class="dot"></span>Correct answer</div>
+    <h3 style="margin:0 0 1.3rem; display:flex; align-items:center; gap:.6rem;">
+        <span class="badge" id="correct" style="background:var(--success); color:#fff; padding:.4rem .75rem; font-size:.95rem;"></span>
+        is correct
+    </h3>
+    <h4 style="font-size:1rem; margin:0 0 .6rem;">Leaderboard</h4>
+    <ol id="leaderboard" class="board" style="margin-bottom:1.3rem;"></ol>
+    <button id="next-btn" class="btn btn-primary">Next Question</button>
 </div>
 
-<div id="done" style="display:none">
+<div id="done" class="gscreen" style="display:none">
     <h2>Game Over</h2>
-    <h4>Final Leaderboard</h4>
-    <ol id="final-leaderboard" class="list-group list-group-numbered"></ol>
-    <a href="{{ url_for('game.host_dashboard') }}" class="btn btn-primary mt-3">Back to Dashboard</a>
+    <h4 style="font-size:1rem;">Final Leaderboard</h4>
+    <ol id="final-leaderboard" class="board" style="margin-bottom:1.3rem;"></ol>
+    <a href="{{ url_for('game.host_dashboard') }}" class="btn btn-primary">Back to Dashboard</a>
 </div>
 {% endblock %}
 
@@ -41,6 +48,7 @@
 const PIN = "{{ room.pin }}";
 const socket = io();
 let timerInterval = null;
+let currentTimeLimit = 20;
 
 socket.on('connect', () => socket.emit('host_join', {pin: PIN}));
 
@@ -48,10 +56,10 @@ socket.on('player_list', (players) => {
     const list = document.getElementById('player-list');
     list.innerHTML = '';
     players.forEach(p => {
-        const li = document.createElement('li');
-        li.className = 'list-group-item';
-        li.textContent = p.nickname;
-        list.appendChild(li);
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = p.nickname;
+        list.appendChild(chip);
     });
     document.getElementById('player-count').textContent = players.length;
     document.getElementById('start-btn').disabled = players.length === 0;
@@ -63,22 +71,21 @@ document.getElementById('start-btn').onclick = (e) => {
 };
 
 socket.on('question_start', (q) => {
+    currentTimeLimit = q.time_limit;
     showOnly('question');
-    document.getElementById('q-index').textContent = q.index + 1;
-    document.getElementById('q-total').textContent = q.total;
+    document.getElementById('q-progress').textContent = 'Question ' + (q.index + 1) + ' of ' + q.total;
     document.getElementById('q-text').textContent = q.text;
     const opts = document.getElementById('q-options');
     opts.innerHTML = '';
+    const letters = ['a', 'b', 'c', 'd'];
+    let i = 0;
     for (const [key, val] of Object.entries(q.options)) {
-        const col = document.createElement('div');
-        col.className = 'col-md-6';
-        const card = document.createElement('div');
-        card.className = 'card p-3';
-        card.innerHTML = '<strong></strong> <span></span>';
-        card.querySelector('strong').textContent = key + '.';
-        card.querySelector('span').textContent = ' ' + val;
-        col.appendChild(card);
-        opts.appendChild(col);
+        const letterClass = 'opt-' + (letters[i++] || 'a');
+        const row = document.createElement('div');
+        row.className = 'opt-btn ' + letterClass;
+        row.innerHTML = '<span class="opt-letter">' + key + '</span><span></span>';
+        row.querySelector('span:last-child').textContent = val;
+        opts.appendChild(row);
     }
     startTimer(q.time_left);
     document.getElementById('reveal-btn').disabled = false;
@@ -110,25 +117,53 @@ socket.on('game_over', (data) => {
 function renderLeaderboard(elemId, board) {
     const ol = document.getElementById(elemId);
     ol.innerHTML = '';
-    board.forEach(p => {
+    const maxScore = Math.max(1, ...board.map(p => p.score));
+    board.forEach((p, i) => {
         const li = document.createElement('li');
-        li.className = 'list-group-item d-flex justify-content-between';
-        const name = document.createElement('span');
-        name.textContent = p.nickname;
-        const score = document.createElement('strong');
-        score.textContent = p.score;
-        li.appendChild(name);
-        li.appendChild(score);
+        if (i === 0) li.classList.add('top');
+        li.style.animationDelay = (i * 90) + 'ms';
+        li.innerHTML =
+            '<div class="bb-fill"></div>' +
+            '<span class="bb-rank">' + (i + 1) + '</span>' +
+            '<span class="bb-name"></span>' +
+            '<strong class="bb-score">0</strong>';
+        li.querySelector('.bb-name').textContent = p.nickname;
         ol.appendChild(li);
+
+        const fill = li.querySelector('.bb-fill');
+        const scoreEl = li.querySelector('.bb-score');
+        const pct = (p.score / maxScore) * 100;
+        setTimeout(() => {
+            fill.style.width = pct + '%';
+            animateNumber(scoreEl, 0, p.score, 650);
+        }, i * 90 + 120);
     });
+}
+
+// Counts an element's textContent from `from` to `to` over `duration`ms —
+// the classic Kahoot "score rolling up" reveal, driven by rAF easing.
+function animateNumber(el, from, to, duration) {
+    const start = performance.now();
+    function tick(now) {
+        const t = Math.min(1, (now - start) / duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        el.textContent = Math.round(from + (to - from) * eased);
+        if (t < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
 }
 
 function startTimer(secondsLeft) {
     stopTimer();
     const deadline = Date.now() + secondsLeft * 1000;
+    const timerEl = document.getElementById('timer');
+    const fillEl = document.getElementById('timer-fill');
     const render = () => {
         const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-        document.getElementById('timer').textContent = remaining;
+        timerEl.textContent = remaining;
+        const pct = Math.max(0, Math.min(100, (remaining / currentTimeLimit) * 100));
+        fillEl.style.width = pct + '%';
+        fillEl.classList.toggle('low', remaining <= 5);
         if (remaining <= 0) stopTimer();
     };
     render();
