@@ -7,7 +7,7 @@ Real-time multiplayer quiz app for Assignment 4.
 - **Auth:** Flask-Login (host-only accounts; players are anonymous with a nickname)
 - **Database:** SQLite via SQLAlchemy
 - **Frontend:** Jinja2 templates + Bootstrap 5 (CDN) + vanilla JS
-- **AI (Part 1.2):** LangGraph + Google Gemini for PDF → question sets
+- **AI (Part 1.2):** LangGraph + Groq for PDF → question sets
 
 ## Setup
 

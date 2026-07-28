@@ -13,12 +13,10 @@
         {% if not enabled %}
         <div class="alert alert-warning">
             <strong>No LLM API key configured.</strong>
-            The pipeline needs one of:
+            The pipeline needs:
             <ul class="mb-0 mt-2">
-                <li><code>GOOGLE_API_KEY</code> — free at
-                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a> (recommended)</li>
-                <li><code>ANTHROPIC_API_KEY</code> — from
-                    <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Anthropic Console</a></li>
+                <li><code>GROQ_API_KEY</code> — free at
+                    <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Groq Console</a></li>
             </ul>
             Add to <code>.env</code> (locally) or Render's Environment tab (deploy).
         </div>

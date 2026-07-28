@@ -5,7 +5,7 @@ CRITICAL: gevent's monkey.patch_all() MUST run before any other import,
 otherwise stdlib modules like ssl (and everything that imports it —
 urllib3, anyio, httpx, langchain's HTTP client) end up holding references
 to the un-patched blocking versions. Symptom is the MonkeyPatchWarning
-you'll see in gunicorn logs, and long HTTPS calls (Gemini API!) that
+you'll see in gunicorn logs, and long HTTPS calls (Groq API!) that
 freeze the WebSocket event loop.
 
 Local dev keeps using `python run.py`, which runs Werkzeug's dev server —

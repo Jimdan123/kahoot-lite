@@ -558,10 +558,10 @@ edge after `quality_check` inspects `len(validated_questions) < MIN` and
    cleanly on scanned PDFs (no extractable text) with a state.error.
 2. **chunk_by_topic** — split by ~500 words. Drop chunks with fewer than
    40 words (too thin to make MCQs from).
-3. **generate_questions** — for each chunk, call Gemini (2.5 Flash,
+3. **generate_questions** — for each chunk, call Groq (Llama 3.3 70B,
    `temperature=0.4`) with a system prompt asking for 3 MCQs as strict
    JSON. One bad chunk skips silently rather than killing the run.
-4. **quality_check** — another Gemini call (`temperature=0.0`) grades the
+4. **quality_check** — another Groq call (`temperature=0.0`) grades the
    whole batch as an array of pass/fail booleans. Failing questions are
    dropped. Duplicates (by question text, case-insensitive) collapse.
 5. **_should_retry** (conditional edge) — if fewer than 5 questions
@@ -616,18 +616,23 @@ Upload is behind the same layered defenses as the rest of the app, plus:
 
 ### LLM provider
 
-The pipeline runs on Google Gemini:
+The pipeline runs on Groq:
 
 | Env var | Client | Model default |
 |---|---|---|
-| `GOOGLE_API_KEY` | `ChatGoogleGenerativeAI` | `gemini-2.5-flash` |
+| `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile` (`qwen/qwen3.6-27b` for scanned-PDF OCR — the only vision-capable model Groq currently offers) |
 
-Gemini's free tier is generous and needs no credit card (get a key at
-https://aistudio.google.com/apikey). The model can be overridden via
-`GEMINI_MODEL`. If the key isn't set, `run_pipeline` raises `RuntimeError`
-early — the `_worker` catches it and surfaces the message via
-`jobs.mark_failed`, so the user sees a clean error on the processing page
-instead of a 500.
+Groq's free tier needs no credit card (get a key at
+https://console.groq.com/keys). The model can be overridden via
+`GROQ_MODEL` (`GROQ_VISION_MODEL` for the OCR path). If the key isn't set,
+`run_pipeline` raises `RuntimeError` early — the `_worker` catches it and
+surfaces the message via `jobs.mark_failed`, so the user sees a clean error
+on the processing page instead of a 500.
+
+Check https://console.groq.com/docs/models before changing the model
+default — Groq's lineup turns over; a hardcoded model that gets deprecated
+fails the same way a dated Gemini model once did here (404, "no longer
+available").
 
 ---
 

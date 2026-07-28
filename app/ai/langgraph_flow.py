@@ -53,19 +53,20 @@ DEFAULT_TIME_LIMIT = 20                  # seconds per generated question
 LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually differ
 LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
 MAX_CHUNKS_PER_RUN = 20                  # hard cap so a big PDF doesn't cost a fortune
-MAX_OCR_PAGES = 15                       # cap on pages sent through Gemini vision OCR
+MAX_OCR_PAGES = 15                       # cap on pages sent through vision-model OCR
 OCR_RESOLUTION = 150                     # dpi for page-image rendering
+LLM_MAX_TOKENS = 4096                    # generous headroom for 3 MCQs w/ math notation —
+                                          # 2048 was tight enough to truncate mid-question
 
-# Google Gemini — free tier, no credit card required.
-# Rolling alias so this doesn't rot when Google retires a dated model (which is
-# what broke this before — 'gemini-2.5-flash' returned 404 as "no longer
-# available to new users" despite still being listed in the models catalog).
-DEFAULT_GEMINI_MODEL = 'gemini-flash-latest'
+# Groq — see https://console.groq.com/docs/models for the current lineup;
+# check there before changing these, models get deprecated/renamed over time.
+DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile'         # text generation + grading
+DEFAULT_GROQ_VISION_MODEL = 'qwen/qwen3.6-27b'         # only vision-capable model on Groq currently
 
 
 def _which_provider() -> Optional[str]:
-    if os.environ.get('GOOGLE_API_KEY'):
-        return 'google'
+    if os.environ.get('GROQ_API_KEY'):
+        return 'groq'
     return None
 
 
@@ -101,8 +102,8 @@ def _extract_text(state: PipelineState) -> dict:
         text = '\n\n'.join(pages).strip()
         page_count = len(pages)
         if not text:
-            _emit(state, 'No text layer found — reading scanned pages via Gemini…', 0.15)
-            text = _ocr_via_gemini(state['pdf_path'])
+            _emit(state, 'No text layer found — reading scanned pages via vision model…', 0.15)
+            text = _ocr_via_vision(state['pdf_path'])
     except Exception as exc:  # corrupt PDF, wrong file type, LLM call failed, etc.
         log.error(f'PDF extract failed: {exc!r}')
         return {'error': f'Could not read PDF: {exc}'}
@@ -120,15 +121,15 @@ _OCR_PROMPT = (
 )
 
 
-def _ocr_via_gemini(pdf_path: str) -> str:
+def _ocr_via_vision(pdf_path: str) -> str:
     """
     Fallback for scanned/image-only PDFs: pdfplumber found no text layer, so
-    render each page to an image and ask Gemini's vision model to read it.
+    render each page to an image and ask Groq's vision model to read it.
     """
     import base64
     from io import BytesIO
 
-    llm = _make_llm(temperature=0.0)
+    llm = _make_llm(temperature=0.0, vision=True)
     with pdfplumber.open(pdf_path) as pdf:
         ocr_pages = pdf.pages[:MAX_OCR_PAGES]
         page_texts = []
@@ -138,10 +139,13 @@ def _ocr_via_gemini(pdf_path: str) -> str:
             b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
             resp = llm.invoke([HumanMessage(content=[
                 {'type': 'text', 'text': _OCR_PROMPT},
-                {'type': 'image_url', 'image_url': f'data:image/png;base64,{b64}'},
+                # OpenAI-compatible multimodal shape (Groq follows it) needs
+                # image_url as {"url": ...}, not a bare string — Gemini's
+                # integration was lenient about this, Groq's is not.
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{b64}'}},
             ])])
             page_text = (resp.content or '').strip()
-            log.info(f'ocr_via_gemini: page {i + 1}/{len(ocr_pages)} -> {len(page_text)} chars')
+            log.info(f'ocr_via_vision: page {i + 1}/{len(ocr_pages)} -> {len(page_text)} chars')
             page_texts.append(page_text)
     return '\n\n'.join(page_texts).strip()
 
@@ -187,13 +191,13 @@ Respond with a single JSON array. No prose, no code fences. Each element:
 
 def _generate_questions(state: PipelineState) -> dict:
     n_chunks = len(state['chunks'])
-    _emit(state, f'Connecting to Gemini (0/{n_chunks})…', 0.3)
+    _emit(state, f'Connecting to Groq (0/{n_chunks})…', 0.3)
     try:
         llm = _make_llm()
     except Exception as exc:
         # Fatal: can't make the client at all (bad model name, missing/invalid key).
-        log.error(f'ChatGoogleGenerativeAI init failed: {exc!r}')
-        return {'error': f'Could not initialize Gemini client: {exc}'}
+        log.error(f'ChatGroq init failed: {exc!r}')
+        return {'error': f'Could not initialize Groq client: {exc}'}
 
     drafts: List[dict] = []
     first_error: Optional[str] = None
@@ -210,12 +214,14 @@ def _generate_questions(state: PipelineState) -> dict:
             parsed = _parse_llm_json(resp.content)
             log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
             if not parsed:
-                # _parse_llm_json swallows malformed/prose/truncated JSON and
-                # returns [] rather than raising — without this branch that
-                # failure mode is invisible and the run just quietly starves.
+                # _parse_llm_json already logged the real JSONDecodeError and
+                # the text around the failure point (see its warning above) —
+                # without this branch the failure mode is invisible and the
+                # run just quietly starves.
                 raise ValueError(
-                    f'Gemini response was not parseable as JSON: '
-                    f'{str(resp.content)[:200]!r}'
+                    f'Groq response was not parseable as JSON '
+                    f'({len(_content_to_text(resp.content))} chars received, '
+                    f'see the _parse_llm_json warning above for exactly where it broke)'
                 )
             drafts.extend(parsed)
         except Exception as exc:
@@ -391,8 +397,8 @@ def run_pipeline(
     """
     if _which_provider() is None:
         raise RuntimeError(
-            'No LLM API key configured. Set GOOGLE_API_KEY (free at '
-            'https://aistudio.google.com/apikey).'
+            'No LLM API key configured. Set GROQ_API_KEY (free at '
+            'https://console.groq.com/keys).'
         )
     initial: PipelineState = {
         'pdf_path': pdf_path,
@@ -413,21 +419,25 @@ def run_pipeline(
 
 # ---- Helpers ---------------------------------------------------------------
 
-def _make_llm(temperature: float = LLM_TEMPERATURE):
+def _make_llm(temperature: float = LLM_TEMPERATURE, vision: bool = False):
     """
-    Build the Gemini chat model. Requires GOOGLE_API_KEY. See .env.example.
+    Build the Groq chat model. Requires GROQ_API_KEY. See .env.example.
+    `vision=True` selects the (currently sole) vision-capable Groq model,
+    used only by the scanned-PDF OCR fallback.
     """
-    if _which_provider() == 'google':
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model=os.environ.get('GEMINI_MODEL', DEFAULT_GEMINI_MODEL),
+    if _which_provider() == 'groq':
+        from langchain_groq import ChatGroq
+        default_model = DEFAULT_GROQ_VISION_MODEL if vision else DEFAULT_GROQ_MODEL
+        env_var = 'GROQ_VISION_MODEL' if vision else 'GROQ_MODEL'
+        return ChatGroq(
+            model=os.environ.get(env_var, default_model),
             temperature=temperature,
-            max_output_tokens=2048,
+            max_tokens=LLM_MAX_TOKENS,
             timeout=LLM_TIMEOUT_SECONDS,
         )
     raise RuntimeError(
-        'No LLM API key configured. Set GOOGLE_API_KEY (get one free at '
-        'https://aistudio.google.com/apikey).'
+        'No LLM API key configured. Set GROQ_API_KEY (get one free at '
+        'https://console.groq.com/keys).'
     )
 
 
@@ -481,5 +491,14 @@ def _parse_llm_json(raw):
         text = text[min(candidates):]
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        # The two real causes look identical from the caller's side (an empty
+        # list) unless we log the actual parse error here: either the
+        # response got cut off before the JSON closed (exc.pos lands at/near
+        # the end of `text` — raise LLM_MAX_TOKENS) or the model slipped an
+        # invalid escape (e.g. raw LaTeX "\Var") into a string value
+        # (exc.pos lands mid-string). Logging a window around exc.pos
+        # distinguishes them at a glance instead of guessing.
+        window = text[max(0, exc.pos - 40):exc.pos + 40]
+        log.warning(f'_parse_llm_json: {exc} — near {window!r} (total {len(text)} chars)')
         return []
