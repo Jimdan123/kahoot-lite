@@ -55,8 +55,7 @@ socket.on('connect', () => socket.emit('host_join', {pin: PIN}));
 // Full snapshot: only sent once, when this host socket connects/reconnects
 // (see on_host_join server-side) — the resync point for whatever the room's
 // actual roster is. Every join/leave after that arrives as a small delta
-// (player_joined / player_left below) instead of the whole list again, so a
-// burst of N joins costs O(N) total instead of O(N^2).
+// (players_joined / player_left below) instead of the whole list again.
 socket.on('player_list', (players) => {
     const list = document.getElementById('player-list');
     list.innerHTML = '';
@@ -64,14 +63,26 @@ socket.on('player_list', (players) => {
     updatePlayerCount();
 });
 
-socket.on('player_joined', (data) => {
-    // Dedupe by nickname: the same-tab-reload edge case in on_player_join
-    // can fire this for a nickname the host's list never actually lost,
-    // so blindly appending would create a visible duplicate chip.
-    if (!findPlayerChip(data.nickname)) {
-        addPlayerChip(data.nickname);
-        updatePlayerCount();
-    }
+// Batched, not one event per join: the server holds joins for up to ~150ms
+// and sends whoever arrived in that window as one list, so a burst of many
+// simultaneous joins is O(bursts) broadcasts instead of O(joins) — see
+// JOIN_BATCH_WINDOW_SECONDS in socket_events.py for why that distinction
+// actually matters (broadcasting to a room is O(n) fanout regardless of
+// payload size, so O(n) individual joins was still O(n^2) deliveries even
+// with a tiny per-join payload).
+socket.on('players_joined', (data) => {
+    let added = false;
+    data.nicknames.forEach(nickname => {
+        // Dedupe by nickname: the same-tab-reload edge case in
+        // on_player_join can queue this for a nickname the host's list
+        // never actually lost, so blindly appending would create a
+        // visible duplicate chip.
+        if (!findPlayerChip(nickname)) {
+            addPlayerChip(nickname);
+            added = true;
+        }
+    });
+    if (added) updatePlayerCount();
 });
 
 socket.on('player_left', (data) => {

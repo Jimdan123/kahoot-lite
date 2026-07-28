@@ -11,6 +11,23 @@ from app.game import game_service
 # still accepts an answer, to absorb network jitter. Late answers are dropped.
 ANSWER_GRACE_SECONDS = 1.0
 
+# How long to hold a batch of joins open before broadcasting them as one
+# event. player_joined broadcasts to every socket in the room regardless of
+# payload size (O(n) fanout per call), so a burst of N simultaneous joins is
+# still O(n) broadcasts x O(n) recipients = O(n^2) deliveries even with a
+# tiny per-join payload. Batching turns that into O(bursts) broadcasts
+# instead of O(joins) — true O(n) total, not just a smaller constant. Cost:
+# a joining player's chip can take up to this long to show up on the host's
+# screen, which is imperceptible at this window and worth it for the burst
+# case; see _flush_pending_joins.
+JOIN_BATCH_WINDOW_SECONDS = 0.15
+
+# pin -> nicknames that joined since the last flush.
+_pending_joins: dict[str, list[str]] = {}
+# pin -> whether a flush is already scheduled, so a burst of joins schedules
+# exactly one background task instead of one per join.
+_flush_scheduled: dict[str, bool] = {}
+
 
 @socketio.on('host_join')
 def on_host_join(data):
@@ -98,22 +115,45 @@ def on_player_join(data):
     join_room(pin)
     # rejoin_token goes only to this socket, never broadcast.
     emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
-    # Incremental delta, not a full-roster resend: rebuilding and broadcasting
-    # the whole player list on every single join is O(n) work times O(n)
-    # joins — the room's actual O(n^2) bottleneck under a burst of joins
-    # (worse than the nickname lookup this replaced, since it's real socket
-    # I/O to every connected player, not just an in-memory scan). The host's
-    # own full snapshot (host_join, above) is the only resync point needed;
-    # everyone already in the room just needs to hear about the one player
-    # who changed. The client dedupes by nickname, so the rare case where a
-    # still-active reconnect fires this again for a nickname it never saw
-    # leave (see the `active` branch above) is harmless, not a duplicate.
-    socketio.emit('player_joined', {'nickname': nickname}, room=pin)
+    # Queue this join to go out in the next batch rather than broadcasting
+    # immediately (see JOIN_BATCH_WINDOW_SECONDS above for why). This used to
+    # be `socketio.emit('player_list', _player_list(room), room=pin)` —
+    # resending and re-rendering the whole roster on every single join.
+    # (Separate issue from find_active_by_nickname in game_service.py — that
+    # one was an O(n) in-memory scan; this one is network I/O to every
+    # connected player, and was the bigger of the two.) The host's full
+    # player_list snapshot is still sent once, in on_host_join above — that's
+    # the only resync point a (re)connecting host needs; everyone else just
+    # needs to eventually hear who joined. The client dedupes by nickname,
+    # so the rare case where a still-active reconnect queues this for a
+    # nickname it never saw leave (the `active` branch above) can't produce
+    # a duplicate chip.
+    _queue_player_joined(pin, nickname)
 
     # If this was a reconnect into a game-in-progress room, catch this socket
     # up to the current state so it isn't stranded on the waiting screen.
     if active or orphan:
         _resume_state_for_player(room, player)
+
+
+def _queue_player_joined(pin: str, nickname: str) -> None:
+    _pending_joins.setdefault(pin, []).append(nickname)
+    if not _flush_scheduled.get(pin):
+        _flush_scheduled[pin] = True
+        socketio.start_background_task(_flush_pending_joins, pin)
+
+
+def _flush_pending_joins(pin: str) -> None:
+    socketio.sleep(JOIN_BATCH_WINDOW_SECONDS)
+    # Grab-and-clear both bits of state before the emit below, which is the
+    # only line in this function that can yield to another greenlet — do it
+    # any later and a join arriving mid-flush could see `_flush_scheduled`
+    # still True, skip scheduling its own flush, and sit in `_pending_joins`
+    # with nothing left to ever send it (a lost-wakeup bug).
+    nicknames = _pending_joins.pop(pin, [])
+    _flush_scheduled.pop(pin, None)
+    if nicknames:
+        socketio.emit('players_joined', {'nicknames': nicknames}, room=pin)
 
 
 @socketio.on('start_game')
