@@ -30,6 +30,11 @@ def on_host_join(data):
     join_room(room.pin)
     emit('room_state', _room_state(room))
     emit('player_list', _player_list(room))
+    # Catch a reconnecting host up to the live phase — without this a host
+    # whose tab refreshes mid-game falls back to the static lobby markup and
+    # can accidentally hit "Start Game" again, which used to restart the
+    # entire game from question 0 (see on_start_game's state guard below).
+    _resume_state_for_host(room)
 
 
 def _token_matches(supplied, expected) -> bool:
@@ -93,18 +98,21 @@ def on_player_join(data):
     join_room(pin)
     # rejoin_token goes only to this socket; player_list broadcast omits it.
     emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
-    emit('player_list', _player_list(room), to=pin)
+    socketio.emit('player_list', _player_list(room), room=pin)
 
     # If this was a reconnect into a game-in-progress room, catch this socket
     # up to the current state so it isn't stranded on the waiting screen.
     if active or orphan:
-        _resume_state_for(room, player)
+        _resume_state_for_player(room, player)
 
 
 @socketio.on('start_game')
 def on_start_game(data):
     room = game_service.get_room(data.get('pin'))
-    if not room or request.sid != room.host_sid:
+    # Only valid from the lobby. Without this guard, a reconnecting host
+    # whose UI fell back to the lobby screen (see on_host_join) could hit
+    # "Start Game" mid-game and silently reset the whole room to question 0.
+    if not room or request.sid != room.host_sid or room.state != 'lobby':
         return
     _advance_to_question(room, 0)
 
@@ -120,11 +128,25 @@ def on_submit_answer(data):
     q = room.current_question()
     if q is None:
         return
+    # Optional (backward-compatible) guard: a client that buffered this
+    # submit_answer while disconnected (Socket.IO queues emits made while
+    # offline and flushes them on reconnect) can otherwise have it land on
+    # a *different* question than the one it was answering, since the room
+    # may have advanced by the time the packet arrives. Older/other clients
+    # that don't send question_index are unaffected.
+    q_index = data.get('question_index')
+    if q_index is not None and q_index != room.current_index:
+        return
     choice = data.get('choice')
     elapsed = time.time() - (room.question_start_time or time.time())
     if elapsed > q['time_limit'] + ANSWER_GRACE_SECONDS:
         # Server-side deadline: reject late submissions so the client-side
-        # timer cannot be bypassed for free points.
+        # timer cannot be bypassed for free points. Emitted as a distinct
+        # event (not answer_ack) so a laggy player's UI can tell them what
+        # happened instead of hanging on "Waiting for results..." forever;
+        # test_security.py's late-answer regression check specifically
+        # asserts no answer_ack is emitted for this path.
+        emit('answer_late', {'message': 'Too late — the deadline already passed.'})
         return
     is_correct = (choice == q['correct_option'])
     earned = game_service.calculate_score(is_correct, elapsed, q['time_limit'])
@@ -139,14 +161,19 @@ def on_submit_answer(data):
 @socketio.on('reveal_answer')
 def on_reveal(data):
     room = game_service.get_room(data.get('pin'))
-    if room and request.sid == room.host_sid:
-        _reveal(room)
+    if not room or request.sid != room.host_sid or room.state != 'question':
+        return
+    _reveal(room)
 
 
 @socketio.on('next_question')
 def on_next(data):
     room = game_service.get_room(data.get('pin'))
-    if not room or request.sid != room.host_sid:
+    # Only valid from 'reveal'. Without this guard, two next_question events
+    # arriving close together (an eager double-click, or duplicate delivery
+    # on a flaky connection — no button is disabled after click) would each
+    # advance current_index, skipping a question.
+    if not room or request.sid != room.host_sid or room.state != 'reveal':
         return
     next_idx = room.current_index + 1
     if next_idx >= len(room.questions):
@@ -169,7 +196,7 @@ def on_disconnect():
                 room.remove_player(request.sid)
             else:
                 room.orphan_player(request.sid)
-            emit('player_list', _player_list(room), to=room.pin)
+            socketio.emit('player_list', _player_list(room), room=room.pin)
 
 
 def _advance_to_question(room, index):
@@ -181,14 +208,24 @@ def _advance_to_question(room, index):
         p.last_answer = None
         p.last_answer_correct = None
     q = room.current_question()
-    public_q = {
-        'index': index,
-        'total': len(room.questions),
-        'text': q['text'],
-        'options': q['options'],
-        'time_limit': q['time_limit'],
-    }
-    emit('question_start', public_q, to=room.pin)
+    socketio.emit('question_start', _question_payload(room, q, index), room=room.pin)
+    # Server-side deadline enforcement for the *state transition*, not just
+    # for scoring: previously only a host clicking "Reveal Answer" or every
+    # player answering could end a question, so a question with an
+    # unanswered player and an inattentive host would hang forever even
+    # after every client's countdown hit zero.
+    socketio.start_background_task(
+        _auto_reveal_watchdog, room.pin, index, q['time_limit'] + ANSWER_GRACE_SECONDS
+    )
+
+
+def _auto_reveal_watchdog(pin, index, delay):
+    socketio.sleep(delay)
+    room = game_service.get_room(pin)
+    # Re-check state + index: the room may have been revealed manually,
+    # swept, or advanced again by the time this fires.
+    if room and room.state == 'question' and room.current_index == index:
+        _reveal(room)
 
 
 def _reveal(room):
@@ -196,17 +233,17 @@ def _reveal(room):
     if q is None:
         return  # nothing to reveal (e.g. host called reveal in the lobby)
     room.state = 'reveal'
-    emit(
+    socketio.emit(
         'question_reveal',
         {'correct_option': q['correct_option'], 'leaderboard': room.leaderboard()},
-        to=room.pin,
+        room=room.pin,
     )
 
 
 def _end_game(room):
     room.state = 'done'
     room.finished_at = time.time()  # starts the grace clock before the reaper sweeps it
-    emit('game_over', {'leaderboard': room.leaderboard()}, to=room.pin)
+    socketio.emit('game_over', {'leaderboard': room.leaderboard()}, room=room.pin)
 
 
 def _room_state(room):
@@ -221,23 +258,58 @@ def _player_list(room):
     return [{'nickname': p.nickname} for p in room.players.values()]
 
 
-def _resume_state_for(room, player):
+def _question_payload(room, q, index):
+    """Shared shape for question_start, sent both on a fresh advance and on
+    a reconnect resume. time_left is computed server-side from the real
+    question_start_time (not just q['time_limit']) so a client that
+    reconnects mid-question is told the actual remaining time instead of a
+    fresh full countdown — the client turns this into a local deadline
+    (now + time_left) and re-derives "remaining" from that deadline on every
+    tick, so a backgrounded/throttled tab self-corrects instead of drifting."""
+    elapsed = time.time() - (room.question_start_time or time.time())
+    time_left = max(0.0, q['time_limit'] - elapsed)
+    return {
+        'index': index,
+        'total': len(room.questions),
+        'text': q['text'],
+        'options': q['options'],
+        'time_limit': q['time_limit'],
+        'time_left': round(time_left, 1),
+    }
+
+
+def _resume_state_for_player(room, player):
     """Emit just to the current socket enough state to render the current
     game phase, so a reconnected player lands on the right screen instead of
     the initial waiting spinner."""
     if room.state == 'question':
         q = room.current_question()
         if q is not None:
-            emit('question_start', {
-                'index': room.current_index,
-                'total': len(room.questions),
-                'text': q['text'],
-                'options': q['options'],
-                'time_limit': q['time_limit'],
-                # None if they hadn't answered yet; their previous choice
-                # otherwise, so the client can lock the buttons.
-                'resumed_answer': player.last_answer,
+            payload = _question_payload(room, q, room.current_index)
+            # None if they hadn't answered yet; their previous choice
+            # otherwise, so the client can lock the buttons.
+            payload['resumed_answer'] = player.last_answer
+            emit('question_start', payload)
+    elif room.state == 'reveal':
+        q = room.current_question()
+        if q is not None:
+            emit('question_reveal', {
+                'correct_option': q['correct_option'],
+                'leaderboard': room.leaderboard(),
             })
+    elif room.state == 'done':
+        emit('game_over', {'leaderboard': room.leaderboard()})
+
+
+def _resume_state_for_host(room):
+    """Same idea as _resume_state_for_player, but for a reconnecting host.
+    Without this the host's UI falls back to the static lobby markup on any
+    reconnect (refresh, sleep/wake, network blip) with no indication the
+    game is actually mid-question or mid-reveal."""
+    if room.state == 'question':
+        q = room.current_question()
+        if q is not None:
+            emit('question_start', _question_payload(room, q, room.current_index))
     elif room.state == 'reveal':
         q = room.current_question()
         if q is not None:

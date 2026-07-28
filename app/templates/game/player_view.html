@@ -39,6 +39,7 @@ const NICKNAME = "{{ nickname }}";
 const socket = io();
 let myScore = 0;
 let timerInterval = null;
+let currentQuestionIndex = null;
 
 // Rejoin token: persisted per (pin, nickname) so reloads and network-drop
 // reconnects can reclaim this exact player slot. Attackers who see the
@@ -57,6 +58,7 @@ socket.on('joined', (data) => {
 });
 
 socket.on('question_start', (q) => {
+    currentQuestionIndex = q.index;
     showOnly('question');
     document.getElementById('q-text').textContent = q.text;
     const opts = document.getElementById('q-options');
@@ -69,7 +71,7 @@ socket.on('question_start', (q) => {
         btn.dataset.choice = key;
         btn.textContent = key + '. ' + val;
         btn.onclick = () => {
-            socket.emit('submit_answer', {pin: PIN, choice: key});
+            socket.emit('submit_answer', {pin: PIN, choice: key, question_index: currentQuestionIndex});
             document.querySelectorAll('#q-options button').forEach(b => b.disabled = true);
             btn.classList.replace('btn-outline-primary', 'btn-primary');
             document.getElementById('answer-status').textContent = 'Answer submitted. Waiting for results...';
@@ -78,7 +80,11 @@ socket.on('question_start', (q) => {
         opts.appendChild(col);
     }
     document.getElementById('answer-status').textContent = '';
-    startTimer(q.time_limit);
+    // time_left is the server's authoritative remaining time as of this
+    // message (accounts for a mid-question reconnect); startTimer turns it
+    // into a local deadline so a backgrounded/throttled tab recomputes the
+    // correct value instead of drifting when it wakes back up.
+    startTimer(q.time_left);
     // If this is a rejoin after answering, freeze the buttons to reflect
     // the previous choice so the player can't submit again.
     if (q.resumed_answer) {
@@ -98,6 +104,13 @@ socket.on('answer_ack', (data) => {
     status.textContent = (data.correct ? 'Correct! ' : 'Wrong. ') + '+' + data.earned + ' points (total: ' + data.total + ')';
 });
 
+// Sent instead of answer_ack when a submission missed the server-side
+// deadline — without this the player was stuck on "Waiting for
+// results..." with no explanation until the next reveal, if one ever came.
+socket.on('answer_late', (data) => {
+    document.getElementById('answer-status').textContent = data.message || 'Too late — no points for that one.';
+});
+
 socket.on('question_reveal', (data) => {
     stopTimer();
     showOnly('reveal');
@@ -113,6 +126,10 @@ socket.on('game_over', (data) => {
 
 socket.on('error', (data) => {
     alert(data.message);
+    // These errors only ever come from a failed player_join (nickname
+    // taken, room not found, game already in progress) — leaving the
+    // player on this dead page after dismissing the alert was a dead end.
+    window.location.href = '/game/join';
 });
 
 function renderLeaderboard(elemId, board) {
@@ -131,14 +148,21 @@ function renderLeaderboard(elemId, board) {
     });
 }
 
-function startTimer(seconds) {
-    let remaining = seconds;
-    document.getElementById('timer').textContent = remaining;
-    timerInterval = setInterval(() => {
-        remaining -= 1;
+function startTimer(secondsLeft) {
+    stopTimer();
+    // Deadline computed once, in this tab's own clock. Every tick re-derives
+    // "remaining" from (deadline - now) instead of decrementing a counter,
+    // so a tab that gets backgrounded/throttled (browsers slow or pause
+    // setInterval when hidden) shows the correct value the moment it's
+    // checked again, rather than a stale one that drifted while hidden.
+    const deadline = Date.now() + secondsLeft * 1000;
+    const render = () => {
+        const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
         document.getElementById('timer').textContent = remaining;
         if (remaining <= 0) stopTimer();
-    }, 1000);
+    };
+    render();
+    timerInterval = setInterval(render, 250);
 }
 
 function stopTimer() {

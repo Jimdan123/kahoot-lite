@@ -48,7 +48,10 @@ def join():
     prefill_pin = request.args.get('pin', '')
     if request.method == 'POST':
         pin = request.form.get('pin', '').strip()
-        nickname = request.form.get('nickname', '').strip()
+        # Truncate here to match the cap socket_events.on_player_join applies —
+        # otherwise the waiting-screen greeting can show a longer name than
+        # what actually gets registered as the player's nickname.
+        nickname = request.form.get('nickname', '').strip()[:20]
         if not pin or not nickname:
             flash('PIN and nickname are required.', 'warning')
             return render_template('game/join.html', pin=pin, nickname=nickname)

@@ -1,5 +1,6 @@
 from flask import render_template, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
+from sqlalchemy.exc import IntegrityError
 from app.auth import auth_bp
 from app.auth.forms import LoginForm, SignupForm
 from app.extensions import db, limiter
@@ -32,7 +33,16 @@ def signup():
         user = User(email=form.email.data.lower(), display_name=form.display_name.data)
         user.set_password(form.password.data)
         db.session.add(user)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # Narrow race: two signups for the same email passed the
+            # pre-commit uniqueness check before either committed. The DB's
+            # unique constraint is the real guard; turn its failure into the
+            # same friendly message instead of a 500.
+            db.session.rollback()
+            flash('Email already registered', 'danger')
+            return render_template('auth/signup.html', form=form)
         login_user(user)
         flash('Welcome! Your account is ready.', 'success')
         return redirect(url_for('main.index'))
@@ -57,7 +67,7 @@ def login():
     return render_template('auth/login.html', form=form)
 
 
-@auth_bp.route('/logout')
+@auth_bp.route('/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()

@@ -3,6 +3,11 @@
 <h2>Add Question to "{{ question_set.name }}"</h2>
 <form method="POST" class="col-md-8">
     {{ form.hidden_tag() }}
+    {% for field in form if field.errors %}
+        {% for error in field.errors %}
+            <div class="alert alert-danger py-2">{{ field.label.text }}: {{ error }}</div>
+        {% endfor %}
+    {% endfor %}
     <div class="mb-3">
         {{ form.text.label(class='form-label') }}
         {{ form.text(class='form-control', rows=2) }}

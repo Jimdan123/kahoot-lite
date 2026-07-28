@@ -57,7 +57,10 @@ socket.on('player_list', (players) => {
     document.getElementById('start-btn').disabled = players.length === 0;
 });
 
-document.getElementById('start-btn').onclick = () => socket.emit('start_game', {pin: PIN});
+document.getElementById('start-btn').onclick = (e) => {
+    e.target.disabled = true;
+    socket.emit('start_game', {pin: PIN});
+};
 
 socket.on('question_start', (q) => {
     showOnly('question');
@@ -77,19 +80,27 @@ socket.on('question_start', (q) => {
         col.appendChild(card);
         opts.appendChild(col);
     }
-    startTimer(q.time_limit);
+    startTimer(q.time_left);
+    document.getElementById('reveal-btn').disabled = false;
 });
 
-document.getElementById('reveal-btn').onclick = () => socket.emit('reveal_answer', {pin: PIN});
+document.getElementById('reveal-btn').onclick = (e) => {
+    e.target.disabled = true;  // server also guards state, this just avoids a double-fire
+    socket.emit('reveal_answer', {pin: PIN});
+};
 
 socket.on('question_reveal', (data) => {
     stopTimer();
     showOnly('reveal');
     document.getElementById('correct').textContent = data.correct_option;
     renderLeaderboard('leaderboard', data.leaderboard);
+    document.getElementById('next-btn').disabled = false;
 });
 
-document.getElementById('next-btn').onclick = () => socket.emit('next_question', {pin: PIN});
+document.getElementById('next-btn').onclick = (e) => {
+    e.target.disabled = true;
+    socket.emit('next_question', {pin: PIN});
+};
 
 socket.on('game_over', (data) => {
     showOnly('done');
@@ -112,14 +123,16 @@ function renderLeaderboard(elemId, board) {
     });
 }
 
-function startTimer(seconds) {
-    let remaining = seconds;
-    document.getElementById('timer').textContent = remaining;
-    timerInterval = setInterval(() => {
-        remaining -= 1;
+function startTimer(secondsLeft) {
+    stopTimer();
+    const deadline = Date.now() + secondsLeft * 1000;
+    const render = () => {
+        const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
         document.getElementById('timer').textContent = remaining;
         if (remaining <= 0) stopTimer();
-    }, 1000);
+    };
+    render();
+    timerInterval = setInterval(render, 250);
 }
 
 function stopTimer() {
