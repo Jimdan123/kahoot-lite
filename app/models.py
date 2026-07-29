@@ -64,6 +64,7 @@ class Question(db.Model):
     option_d = db.Column(db.String(500))
     correct_option = db.Column(db.String(1), nullable=False)
     time_limit = db.Column(db.Integer, default=20)
+    difficulty = db.Column(db.String(10))  # 'easy' | 'medium' | 'hard'; null for manually-added questions
 
     def options(self):
         return {

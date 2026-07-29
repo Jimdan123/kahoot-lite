@@ -21,6 +21,8 @@ class PipelineState(TypedDict, total=False):
     closed_book_results: List[dict]      # after closed_book_check, aligned with draft_questions
     validated_questions: List[dict]      # after quality_check
 
+    practice_questions: List[dict]       # after generate_practice_questions (separate track)
+
     retry_count: int                     # driven by conditional edge
     progress_cb: Optional[Callable[[str, float], None]]  # UI progress hook
 

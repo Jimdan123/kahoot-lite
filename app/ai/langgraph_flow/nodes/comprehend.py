@@ -160,6 +160,19 @@ Perform:
    connected, never ones that merely share a topic. It is fine to return few
    links, or none, if the document doesn't have that many real connections.
 
+4. TOPIC — a short phrase (5-12 words) naming the specific subject/skill this
+   document teaches, specific enough to search for good practice problems on
+   (e.g. "solving quadratic equations by factoring", "Vietnamese greetings
+   and introductions vocabulary", "binomial probability distributions") —
+   not a generic label like "math" or "language learning".
+
+5. EXISTING EXERCISES — if any chunk's content_type was `reference`,
+   `unanswerable_exercise`, or `mixed`, copy up to 8 short verbatim excerpts
+   of the actual exercises/questions/prompts already present (not your own
+   summaries). Used later so a separate practice-question generator can
+   avoid writing near-duplicates of what's already there. Empty list if the
+   document has no exercises of its own.
+
 Return JSON:
 {
   "claims": [{"text": "", "spans": [""], "chunk_indices": [0]}],
@@ -173,7 +186,9 @@ Return JSON:
       "chunk_b": 1, "item_b": "<short description of the fact in chunk_b>",
       "relation": "<one phrase: how they connect, e.g. 'condition for the mechanism'>"
     }
-  ]
+  ],
+  "topic": "",
+  "existing_exercises": [""]
 }
 
 If everything genuinely lives in one chunk (a short document), `links` will
@@ -200,14 +215,17 @@ def merge_comprehension(state: PipelineState) -> dict:
         log.warning(f'merge_comprehension: LLM merge failed ({exc!r}), falling back to naive concat')
         merged = _naive_merge(records)
 
+    merged.setdefault('topic', '')
+    merged.setdefault('existing_exercises', [])
     n_links = len(merged.get('links') or [])
-    log.info(f'merge_comprehension: {n_links} cross-chunk links found')
+    log.info(f"merge_comprehension: {n_links} cross-chunk links found, "
+             f"topic={merged['topic']!r}, {len(merged['existing_exercises'])} existing exercises")
     return {'comprehension': merged}
 
 
 def _empty_comprehension() -> dict:
     return {'claims': [], 'definitions': [], 'mechanisms': [], 'quantities': [],
-            'undefined_terms': [], 'links': []}
+            'undefined_terms': [], 'links': [], 'topic': '', 'existing_exercises': []}
 
 
 def _naive_merge(records: List[dict]) -> dict:

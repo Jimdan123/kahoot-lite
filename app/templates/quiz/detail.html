@@ -27,7 +27,10 @@
                 {% endif %}
             {% endfor %}
         </ul>
-        <small class="text-muted">Time limit: {{ q.time_limit }}s</small>
+        <small class="text-muted">
+            Time limit: {{ q.time_limit }}s
+            {% if q.difficulty %}&middot; <span class="badge bg-secondary">{{ q.difficulty }}</span>{% endif %}
+        </small>
     </li>
     {% endfor %}
 </ol>

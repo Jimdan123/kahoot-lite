@@ -11,6 +11,8 @@ Graph shape:
           |
      merge_comprehension    -- dedupe + find cross-chunk links (two-hop fuel)
           |
+     practice               -- SEPARATE track: web-searched easy/med/hard
+          |                    practice Qs on the topic (nodes/practice.py)
      generate_questions <───────────┐
           |                         │
      closed_book_check              │  retry if too few
@@ -24,6 +26,10 @@ A retry only re-enters at generate_questions — comprehension is deterministic
 per document and expensive to redo, so a bad question-writing pass gets
 another shot at the (unchanged) comprehension record rather than re-reading
 the PDF. Retries are capped by `retry_count` in state (MAX_RETRIES).
+
+`practice` runs once, is not retried, and never sets state['error'] on
+failure (see nodes/practice.py) — it's additive on top of the two-hop
+questions `generate`/`closed_book`/`quality` produce, not a replacement.
 
 Requires GROQ_API_KEY in the environment. See .env.example.
 """
@@ -40,6 +46,7 @@ from app.ai.langgraph_flow.nodes.comprehend import comprehend_chunks, merge_comp
 from app.ai.langgraph_flow.nodes.critic import closed_book_check, quality_check
 from app.ai.langgraph_flow.nodes.extract import extract_text
 from app.ai.langgraph_flow.nodes.generate import generate_questions
+from app.ai.langgraph_flow.nodes.practice import generate_practice_questions
 from app.ai.langgraph_flow.nodes.save import save
 from app.ai.langgraph_flow.progress import emit
 from app.ai.langgraph_flow.state import PipelineState
@@ -66,6 +73,7 @@ def _build_graph():
     graph.add_node('chunk', chunk_by_topic)
     graph.add_node('comprehend', comprehend_chunks)
     graph.add_node('merge_comprehension', merge_comprehension)
+    graph.add_node('practice', generate_practice_questions)
     graph.add_node('generate', generate_questions)
     graph.add_node('closed_book', closed_book_check)
     graph.add_node('quality', quality_check)
@@ -76,7 +84,8 @@ def _build_graph():
     graph.add_edge('extract', 'chunk')
     graph.add_edge('chunk', 'comprehend')
     graph.add_edge('comprehend', 'merge_comprehension')
-    graph.add_edge('merge_comprehension', 'generate')
+    graph.add_edge('merge_comprehension', 'practice')
+    graph.add_edge('practice', 'generate')
     graph.add_edge('generate', 'closed_book')
     graph.add_edge('closed_book', 'quality')
     graph.add_conditional_edges('quality', _should_retry, {

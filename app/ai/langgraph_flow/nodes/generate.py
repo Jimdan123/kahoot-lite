@@ -15,7 +15,13 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from app.ai.langgraph_flow.config import MAX_LINKS_PER_CHUNK, QUESTIONS_PER_CHUNK
+from app.ai.langgraph_flow.config import (
+    FALLBACK_TIME_LIMIT,
+    MAX_LINKS_PER_CHUNK,
+    MAX_TIME_LIMIT,
+    MIN_TIME_LIMIT,
+    QUESTIONS_PER_CHUNK,
+)
 from app.ai.langgraph_flow.json_utils import parse_llm_json, content_to_text
 from app.ai.langgraph_flow.llm_utils import make_llm
 from app.ai.langgraph_flow.progress import emit
@@ -67,9 +73,20 @@ Rules for the options:
   - Question wording is standalone.
   - Language of the questions matches the language of the passage.
 
+DIFFICULTY & TIME — rate each question "easy", "medium", or "hard" based on
+how many real reasoning steps combining hop_a and hop_b actually takes (not
+on vocabulary difficulty). Then set `time_limit`: YOUR honest estimate in
+seconds of how long a student who has the two hops in mind still needs to
+work through the combination to the answer. Think it through yourself
+first — a question with real arithmetic or a multi-step chain needs far
+more than a recall check, even if you rated it "medium". Do not default to
+a round number out of habit.
+
 PROCEDURE — for each question, fill fields IN ORDER. Identify hop_a and hop_b
 FIRST. Then write `tests`: the one specific misunderstanding a student falls
-into if they only have one of the two hops. Only THEN write the question.
+into if they only have one of the two hops. Only THEN write the question,
+then rate difficulty and time_limit last (you can't judge either until the
+question exists).
 
 Return a single JSON array. No prose, no code fences. Each element:
 {{
@@ -78,7 +95,9 @@ Return a single JSON array. No prose, no code fences. Each element:
   "tests": "<what a student who only knew hop_a would get wrong>",
   "question": "...",
   "A": "...", "B": "...", "C": "...", "D": "...",
-  "correct": "A"
+  "correct": "A",
+  "difficulty": "easy | medium | hard",
+  "time_limit": 20
 }}
 """
 
@@ -129,6 +148,7 @@ def generate_questions(state: PipelineState) -> dict:
                 )
             for q in parsed:
                 q['_chunk_index'] = i
+                _normalize_difficulty_and_time(q)
             drafts.extend(parsed)
         except Exception as exc:
             # One bad chunk doesn't kill the run, but keep the FIRST error
@@ -153,6 +173,20 @@ def generate_questions(state: PipelineState) -> dict:
     # so without this a retry that succeeds after a fully-failed first pass
     # would still carry the old error through to run_pipeline's final check.
     return {'draft_questions': drafts, 'error': None}
+
+
+def _normalize_difficulty_and_time(q: dict) -> None:
+    """Clamp the LLM's own difficulty/time_limit rating to sane bounds
+    in-place. This is a safety net, not the source of truth — the model
+    picks the actual value per question; we just guard against it omitting
+    the field or returning nonsense."""
+    if q.get('difficulty') not in ('easy', 'medium', 'hard'):
+        q['difficulty'] = 'medium'
+    try:
+        time_limit = int(q.get('time_limit'))
+    except (TypeError, ValueError):
+        time_limit = FALLBACK_TIME_LIMIT
+    q['time_limit'] = max(MIN_TIME_LIMIT, min(MAX_TIME_LIMIT, time_limit))
 
 
 def _build_context(chunk_index: int, comprehension: dict) -> str:
