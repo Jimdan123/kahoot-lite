@@ -39,6 +39,25 @@ LLM_MAX_TOKENS = 4096                    # generous headroom for 3 MCQs w/ math 
 # check there before changing these, models get deprecated/renamed over time.
 DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile'         # text generation + grading
 
+# Fallback order when a model's rate limit or daily token quota is
+# exhausted (groq.RateLimitError) or the org's Groq console doesn't have it
+# enabled (groq.PermissionDeniedError) — see llm_utils._RotatingLLM.
+# Keep this in sync with Settings -> Limits in the Groq console: only
+# models with a green checkmark there are actually callable for this org.
+# Override with the GROQ_MODEL_CHAIN env var (comma-separated) without a
+# code change if the org's allowed models change.
+GROQ_MODEL_CHAIN = ['llama-3.3-70b-versatile', 'qwen/qwen3.6-27b']
+
+# NVIDIA NIM (build.nvidia.com) — optional last-resort fallback tier, used
+# only if BOTH Groq models above are exhausted/blocked. Entirely optional:
+# if NVIDIA_API_KEY isn't set, the rotation chain simply stops at Groq.
+# OpenAI-compatible endpoint, see llm_utils.py. Free API key at
+# https://build.nvidia.com — override the model via NVIDIA_MODEL env var.
+NVIDIA_API_BASE = 'https://integrate.api.nvidia.com/v1'
+# meta/llama-3.3-70b-instruct is in the NIM catalog but hangs/times out on
+# this account (verified — 120s+, no response); nemotron responds in ~1-15s.
+NVIDIA_MODEL = 'nvidia/llama-3.3-nemotron-super-49b-v1'
+
 # ---- Topic-practice track ------------------------------------------------
 # Separate from the document's own two-hop comprehension questions (see
 # nodes/practice.py).
@@ -49,3 +68,7 @@ def which_provider() -> Optional[str]:
     if os.environ.get('GROQ_API_KEY'):
         return 'groq'
     return None
+
+
+def has_nvidia_fallback() -> bool:
+    return bool(os.environ.get('NVIDIA_API_KEY'))

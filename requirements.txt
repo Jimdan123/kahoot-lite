@@ -19,6 +19,7 @@ email-validator>=2.0.0
 langgraph>=0.2.0
 langchain-core>=0.3.0
 langchain-groq>=0.2.0
+langchain-openai>=0.2.0       # NVIDIA NIM fallback tier — OpenAI-compatible endpoint, see llm_utils.py
 pdfplumber>=0.11.0
 pytesseract>=0.3.10           # wraps the `tesseract` system binary — see README/Dockerfile
 
