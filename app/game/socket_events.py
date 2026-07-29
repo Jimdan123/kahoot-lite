@@ -2,7 +2,7 @@ import secrets
 import time
 from flask import request
 from flask_login import current_user
-from flask_socketio import emit, join_room
+from flask_socketio import disconnect, emit, join_room
 from app.extensions import socketio
 from app.game import game_service
 
@@ -88,12 +88,22 @@ def on_player_join(data):
         if not _token_matches(supplied_token, active.rejoin_token):
             emit('error', {'message': 'Nickname is already taken in this room'})
             return
-        room.remove_player(active.sid)
+        old_sid = active.sid
+        room.remove_player(old_sid)
         player = room.add_player(request.sid, nickname)
         player.rejoin_token = active.rejoin_token
         player.score = active.score
         player.last_answer = active.last_answer
         player.last_answer_correct = active.last_answer_correct
+        # The matching token means this is the same person opening their
+        # join link in another tab/window (localStorage is shared across
+        # tabs on one browser) — without this, the old tab silently became a
+        # zombie: still connected and still receiving room broadcasts, but
+        # removed from room.players so it could no longer act. Tell it to
+        # bail out before killing its connection, so cleanup order can't
+        # let this disconnect handler mistake the old sid for the new one.
+        socketio.emit('session_replaced', {}, room=old_sid)
+        disconnect(sid=old_sid)
     elif orphan:
         if not _token_matches(supplied_token, orphan.rejoin_token):
             emit('error', {'message': 'Nickname is already taken in this room'})

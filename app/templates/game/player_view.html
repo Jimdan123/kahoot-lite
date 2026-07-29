@@ -161,6 +161,15 @@ socket.on('error', (data) => {
     window.location.href = '/game/join';
 });
 
+// Sent to this exact socket when the same nickname reconnects from another
+// tab/window (localStorage's rejoin token is shared across tabs on one
+// browser, so the server treats it as the same player taking over). This
+// tab is no longer tracked in the room, so send it home instead of leaving
+// it stuck on a screen that can no longer submit answers or get updates.
+socket.on('session_replaced', () => {
+    window.location.href = '/';
+});
+
 function renderLeaderboard(elemId, board) {
     const ol = document.getElementById(elemId);
     ol.innerHTML = '';
