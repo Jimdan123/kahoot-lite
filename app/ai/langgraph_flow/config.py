@@ -48,15 +48,31 @@ DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile'         # text generation + gradi
 # code change if the org's allowed models change.
 GROQ_MODEL_CHAIN = ['llama-3.3-70b-versatile', 'qwen/qwen3.6-27b']
 
-# NVIDIA NIM (build.nvidia.com) — optional last-resort fallback tier, used
-# only if BOTH Groq models above are exhausted/blocked. Entirely optional:
-# if NVIDIA_API_KEY isn't set, the rotation chain simply stops at Groq.
+# NVIDIA NIM (build.nvidia.com) — optional fallback tier, tried only once
+# every Groq model above is exhausted/blocked. Entirely optional: if
+# NVIDIA_API_KEY isn't set, the rotation chain simply skips this tier.
 # OpenAI-compatible endpoint, see llm_utils.py. Free API key at
-# https://build.nvidia.com — override the model via NVIDIA_MODEL env var.
+# https://build.nvidia.com — override via the NVIDIA_MODEL_CHAIN env var
+# (comma-separated).
 NVIDIA_API_BASE = 'https://integrate.api.nvidia.com/v1'
 # meta/llama-3.3-70b-instruct is in the NIM catalog but hangs/times out on
-# this account (verified — 120s+, no response); nemotron responds in ~1-15s.
-NVIDIA_MODEL = 'nvidia/llama-3.3-nemotron-super-49b-v1'
+# this account (verified — 120s+, no response) — excluded. Both of these
+# verified fast (~1-15s) with clean JSON output.
+NVIDIA_MODEL_CHAIN = ['nvidia/llama-3.3-nemotron-super-49b-v1', 'meta/llama-3.1-8b-instruct']
+
+# OpenRouter (openrouter.ai) — optional last-resort fallback tier, tried
+# only once every Groq AND NVIDIA model above is exhausted/blocked.
+# Entirely optional: if OPENROUTER_API_KEY isn't set, the rotation chain
+# simply skips this tier. OpenAI-compatible endpoint, see llm_utils.py.
+# Free API key at https://openrouter.ai/keys — override via the
+# OPENROUTER_MODEL_CHAIN env var (comma-separated). All three below are
+# free-tier models, verified fast (1-8s) with clean JSON output.
+OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1'
+OPENROUTER_MODEL_CHAIN = [
+    'openai/gpt-oss-20b:free',
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'inclusionai/ling-3.0-flash:free',
+]
 
 # ---- Topic-practice track ------------------------------------------------
 # Separate from the document's own two-hop comprehension questions (see
@@ -72,3 +88,7 @@ def which_provider() -> Optional[str]:
 
 def has_nvidia_fallback() -> bool:
     return bool(os.environ.get('NVIDIA_API_KEY'))
+
+
+def has_openrouter_fallback() -> bool:
+    return bool(os.environ.get('OPENROUTER_API_KEY'))
