@@ -442,7 +442,18 @@ app/
 │   │                        next_question, disconnect
 │   └── game_service.py      In-memory Room + Player state, scoring formula,
 │                            reaper loop for stale rooms.
-├── ai/                  Stub for Part 1.2 (PDF → question set via LangGraph).
+├── ai/                  Part 1.2: PDF → question set via LangGraph.
+│   ├── routes.py            HTTP endpoints: /ai/upload, /ai/processing/<id>,
+│   │                        /ai/status/<id>
+│   ├── jobs.py              In-memory job registry polled by /ai/status
+│   └── langgraph_flow/      The pipeline itself, one file per graph stage
+│       ├── graph.py             Node wiring + run_pipeline() entrypoint
+│       ├── state.py             PipelineState (the dict threaded through the graph)
+│       ├── config.py            Tunables + provider selection
+│       ├── llm_utils.py         Groq client construction
+│       ├── json_utils.py        LLM response → parsed JSON
+│       ├── progress.py          Progress-callback plumbing
+│       └── nodes/               extract, chunk, comprehend, generate, critic, save
 ├── templates/           Jinja2 templates, one folder per blueprint.
 └── static/              CSS + client-side JS.
 
@@ -527,48 +538,104 @@ is created and cached in `room.questions`.
 
 ## 12. Where AI fits in (Part 1.2)
 
-The pipeline is live at `/ai/upload`. Hosts upload a PDF; the server runs a
-LangGraph agent that extracts text, drafts MCQs, has a second LLM pass
-grade them, retries once or twice if too few pass, and saves the survivors
-as a new `QuestionSet` in the same table as manually-created ones — so the
-game loop doesn't know or care where the questions came from.
+The pipeline is live at `/ai/upload`. Hosts upload a PDF; the server runs an
+8-stage LangGraph agent (`app/ai/langgraph_flow/`, one module per stage)
+that extracts text, builds a structured understanding of it, drafts MCQs
+against *that* understanding rather than raw text, checks each question
+isn't answerable without the document, retries once or twice if too few
+survive, and saves the survivors as a new `QuestionSet` in the same table as
+manually-created ones — so the game loop doesn't know or care where the
+questions came from.
+
+The extra structure exists to fight a specific failure mode: a single
+"read this paragraph, write a quiz question" prompt reliably produces recall
+trivia ("What is X called?"). Forcing the model to extract facts first, find
+connections *between* chunks second, and only then write a question that
+needs two of those facts together, produces something closer to a real
+comprehension check.
 
 ### The graph
 
 ```
-   extract_text  ─────►  chunk_by_topic  ─────►  generate_questions  ◄────┐
-                                                          │               │
-                                                          ▼               │
-                                                    quality_check         │
-                                                     │        │           │
-                                       enough pass  ▼        ▼  too few   │
-                                                   save     bump_retry ───┘
-                                                    │        (loops back
-                                                    ▼         to generate,
-                                                   END        capped at 2)
+  extract_text ──► chunk_by_topic ──► comprehend_chunks ──► merge_comprehension
+                                                                    │
+                                                                    ▼
+                                                          generate_questions ◄──┐
+                                                                    │           │
+                                                                    ▼           │
+                                                            closed_book_check   │
+                                                                    │           │
+                                                                    ▼           │
+                                                              quality_check     │
+                                                               │        │       │
+                                                 enough pass  ▼        ▼ too few│
+                                                             save   bump_retry ─┘
+                                                              │      (loops back
+                                                              ▼       to generate,
+                                                             END      capped at 2)
 ```
 
-Each node is a function `PipelineState → dict-of-updates`. The conditional
-edge after `quality_check` inspects `len(validated_questions) < MIN` and
-`retry_count < 2` to decide whether to loop or save.
+Each node is a function `PipelineState → dict-of-updates`. A retry only
+re-enters at `generate_questions` — the comprehension pass is deterministic
+per document and expensive to redo, so a bad question-writing attempt gets
+another shot at the same (unchanged) comprehension record rather than
+re-reading the PDF. The conditional edge after `quality_check` inspects
+`len(validated_questions) < MIN` and `retry_count < 2` to decide whether to
+loop or save.
 
 ### Nodes, in order
 
-1. **extract_text** — `pdfplumber.open(...)`, concatenate pages. Fails
-   cleanly on scanned PDFs (no extractable text) with a state.error.
-2. **chunk_by_topic** — split by ~500 words. Drop chunks with fewer than
-   40 words (too thin to make MCQs from).
-3. **generate_questions** — for each chunk, call Groq (Llama 3.3 70B,
-   `temperature=0.4`) with a system prompt asking for 3 MCQs as strict
-   JSON. One bad chunk skips silently rather than killing the run.
-4. **quality_check** — another Groq call (`temperature=0.0`) grades the
-   whole batch as an array of pass/fail booleans. Failing questions are
-   dropped. Duplicates (by question text, case-insensitive) collapse.
-5. **_should_retry** (conditional edge) — if fewer than 5 questions
+1. **extract_text** (`nodes/extract.py`) — `pdfplumber.open(...)`,
+   concatenate pages. Falls back to a vision-model OCR pass for scanned
+   PDFs with no text layer; fails cleanly with `state.error` if neither
+   produces text.
+2. **chunk_by_topic** (`nodes/chunk.py`) — split by ~500 words. Drop chunks
+   with fewer than 40 words (too thin to reason about).
+3. **comprehend_chunks** (`nodes/comprehend.py`) — per chunk, call Groq
+   (`temperature=0.0`) to extract *claims*, *definitions*, *mechanisms*, and
+   *quantities*, each anchored to a verbatim quote (`span`) from the chunk.
+   No questions are written yet — this stage only builds understanding.
+4. **merge_comprehension** (`nodes/comprehend.py`) — one Groq call over all
+   per-chunk records together: dedupes repeated facts, flags terms used but
+   never defined anywhere (`undefined_terms`), and — the important part —
+   finds **cross-chunk links**: pairs of facts in *different* chunks that
+   actually connect (a mechanism's triggering condition quantified
+   elsewhere, a term defined in one chunk and relied on by a claim in
+   another). Falls back to a naive concatenation with no links if the LLM
+   call fails, so a bad merge doesn't kill the run.
+5. **generate_questions** (`nodes/generate.py`) — for each chunk, call Groq
+   (Llama 3.3 70B, `temperature=0.4`) with the chunk's local comprehension
+   items *and* any cross-chunk links touching it. The system prompt enforces
+   a two-hop rule (a question must combine two distinct facts — preferably
+   a cross-chunk link, otherwise two local items), forbids pure recall and
+   passage-quoting phrasing, and requires the JSON schema to name the two
+   hops (`hop_a`/`hop_b`) and what a one-hop reader would get wrong
+   (`tests`) *before* the `question` field itself — field order matters
+   because a model filling JSON top-to-bottom that writes `question` first
+   will happily rationalize a hop after the fact instead of requiring one.
+6. **closed_book_check** (`nodes/critic.py`) — a *separate*, context-free
+   Groq call (`temperature=0.0`) tries to answer every draft using only
+   general knowledge — it never sees the PDF or the comprehension record.
+   Answer + confidence per question are recorded for the next stage.
+7. **quality_check** (`nodes/critic.py`) — another Groq call grades the
+   batch, rejecting on (in order): a closed-book leak — the context-free
+   attempt matched the correct answer at medium/high confidence, meaning
+   the question doesn't need the document at all — then structural issues
+   (multiple correct options, option not in A–D, verbatim-repeated answer),
+   then a decorative second hop, then ambiguity. Falls back to structural
+   checks only if the critic call itself fails. Duplicates (by question
+   text, case-insensitive) collapse.
+8. **_should_retry** (conditional edge) — if fewer than 5 questions
    survived and we've retried less than twice, jump to `bump_retry` →
-   `generate_questions` again. Otherwise proceed to `save`.
-6. **save** — write a new `QuestionSet` + `Question` rows in one
-   transaction. Returns `question_set_id` to the caller.
+   `generate_questions` again (reusing the existing comprehension record).
+   Otherwise proceed to `save`.
+9. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
+   in one transaction. Returns `question_set_id` to the caller.
+
+Cost/latency trade-off worth knowing: this pipeline makes roughly 2x the LLM
+calls of a plain "chunk → generate → grade" version (one comprehension call
+and one closed-book call per chunk, on top of generate/quality), in exchange
+for meaningfully harder, less-guessable questions.
 
 ### Async execution
 
