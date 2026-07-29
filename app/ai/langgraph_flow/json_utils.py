@@ -8,6 +8,12 @@ import re
 log = logging.getLogger('kahoot.ai')
 
 _JSON_FENCE_RE = re.compile(r'```(?:json)?\s*(.*?)```', re.DOTALL)
+# Reasoning models (e.g. Groq's qwen/qwen3.6-27b) wrap scratch-work in
+# <think>...</think> before the real answer — and that scratch-work often
+# contains its own draft JSON/code fences. Strip it first, or the fence/
+# bracket search below can grab a fragment from the draft instead of the
+# actual final answer.
+_THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL)
 
 
 def content_to_text(raw) -> str:
@@ -37,6 +43,13 @@ def parse_llm_json(raw):
     """Strip common LLM wrapper cruft (code fences, prose) and return the parsed JSON.
     Falls back to an empty list rather than raising, so one bad response doesn't kill the run."""
     text = content_to_text(raw).strip()
+    text = _THINK_RE.sub('', text).strip()
+    if '<think>' in text:
+        # Truncated mid-thought (hit max_tokens before the real answer) —
+        # an unclosed tag means there's no actual answer past this point,
+        # so drop it rather than let the bracket search below grab a
+        # fragment of the draft and mistake it for the final JSON.
+        text = text.split('<think>')[0].strip()
     m = _JSON_FENCE_RE.search(text)
     if m:
         text = m.group(1).strip()
