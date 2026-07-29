@@ -5,7 +5,7 @@ Real-time multiplayer quiz app for Assignment 4.
 ## Stack
 - **Backend:** Flask + Flask-SocketIO (WebSockets for the live game)
 - **Auth:** Flask-Login (host-only accounts; players are anonymous with a nickname)
-- **Database:** SQLite via SQLAlchemy
+- **Database:** Postgres via SQLAlchemy (required — no SQLite fallback)
 - **Frontend:** Jinja2 templates + Bootstrap 5 (CDN) + vanilla JS
 - **AI (Part 1.2):** LangGraph + Groq for PDF → question sets
 
@@ -18,11 +18,18 @@ source venv/bin/activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Configure environment
-cp .env.example .env
-# then edit .env — at minimum set SECRET_KEY to a random string
+# 3. Local Postgres (one-time setup)
+brew install postgresql@14   # if not already installed
+brew services start postgresql@14
+psql -U "$(whoami)" -d postgres -c "CREATE ROLE kahoot_lite LOGIN PASSWORD 'kahoot_lite_dev';"
+psql -U "$(whoami)" -d postgres -c "CREATE DATABASE kahoot_lite OWNER kahoot_lite;"
 
-# 4. Run
+# 4. Configure environment
+cp .env.example .env
+# then edit .env — at minimum set SECRET_KEY to a random string;
+# DATABASE_URL already points at the local Postgres role/db created above
+
+# 5. Run
 python run.py
 ```
 
@@ -30,7 +37,7 @@ Open http://localhost:5001
 
 (Port 5000 is used by macOS AirPlay Receiver on newer macOS versions — the app defaults to 5001 to avoid the collision. Override with `PORT=xxxx python run.py` if needed.)
 
-The SQLite database (`instance/kahoot.db`) is created automatically on first run.
+Tables are created automatically on first run via `db.create_all()`. `DATABASE_URL` is required — the app raises at startup if it's missing (no SQLite fallback).
 
 ## Feature status (Part 1.1)
 
@@ -65,7 +72,7 @@ app/
   static/             CSS + JS
 config.py             Development / Production config classes
 run.py                entry point
-instance/             runtime files (SQLite DB, uploads) — gitignored
+instance/             runtime files (uploads) — gitignored
 ```
 
 ## Deploy to Render (public URL, free tier)
@@ -97,7 +104,7 @@ The QR codes in `/game/host/<pin>` will automatically use that public URL, so pl
 
 **Caveats on the free tier:**
 - App **sleeps after 15 min of inactivity** (~30s cold start on next request)
-- The Blueprint provisions a free Postgres database automatically. If you deployed *without* the Blueprint (manual Web Service), the app will fall back to SQLite on the container filesystem, which is **ephemeral** — the DB resets on every redeploy. To fix that, provision a Postgres database in the Render dashboard and set its `DATABASE_URL` on the web service.
+- The Blueprint provisions a free Postgres database and wires its `DATABASE_URL` into the web service automatically. If a service was ever created *without* the Blueprint (manual Web Service) or `DATABASE_URL` is otherwise missing, the app now fails to start rather than silently falling back to ephemeral storage — provision a Postgres database in the Render dashboard and set its `DATABASE_URL` on the web service.
 - Render's free Postgres expires after 90 days — you'll need to snapshot/migrate or accept data loss at that point.
 - One worker only. For a class demo this is plenty; scaling requires Redis for shared room state.
 

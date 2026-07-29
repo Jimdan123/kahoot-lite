@@ -60,9 +60,9 @@ companion to the `README.md` (which is "how to run it").
 
 Two things share the same server:
 
-- **Long-lived state** (accounts, question sets) → **Postgres** on Render, or
-  a local **SQLite** file (`instance/kahoot.db`) if you haven't wired the DB
-  yet. Managed by SQLAlchemy.
+- **Long-lived state** (accounts, question sets) → **Postgres**, required
+  everywhere (local dev included — no SQLite fallback). Managed by
+  SQLAlchemy; `DATABASE_URL` must be set or the app refuses to start.
 - **Ephemeral live-game state** (which players are in a room right now, what
   question is on screen, the countdown) → a plain Python `dict` in the
   running process. Fine for one worker; would need Redis to scale out.
@@ -155,7 +155,7 @@ The token lives in the player's `localStorage`, keyed by `pin + nickname`.
 
 ## 4. Data model: what's in the database, what's in RAM
 
-### Persistent (Postgres or SQLite, via SQLAlchemy)
+### Persistent (Postgres, via SQLAlchemy)
 
 ```
 users                            question_sets                   questions
@@ -462,7 +462,7 @@ run.py                   Entry point (used only for `python run.py` locally).
 Procfile / render.yaml   Production entrypoint on Render.
 requirements.txt         Pinned Python deps.
 tests/                   End-to-end regression tests.
-instance/                Runtime files (SQLite DB, uploads) — gitignored.
+instance/                Runtime files (uploads) — gitignored.
 ```
 
 Two principles worth noting:

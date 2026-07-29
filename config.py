@@ -15,11 +15,19 @@ def _normalize_db_url(url):
     return url
 
 
+def _require_database_url():
+    url = os.environ.get('DATABASE_URL')
+    if not url:
+        raise RuntimeError(
+            'DATABASE_URL environment variable is required (Postgres only — '
+            'no SQLite fallback). See .env.example / README for local setup.'
+        )
+    return _normalize_db_url(url)
+
+
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-only-change-me')
-    SQLALCHEMY_DATABASE_URI = _normalize_db_url(
-        os.environ.get('DATABASE_URL') or f'sqlite:///{basedir / "instance" / "kahoot.db"}'
-    )
+    SQLALCHEMY_DATABASE_URI = _require_database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     WTF_CSRF_ENABLED = True
     UPLOAD_FOLDER = basedir / 'instance' / 'uploads'
