@@ -98,6 +98,12 @@ Apply these rejection tests, in order. Reject on the first failure.
     A-D, or an option repeats the answer verbatim from the question stem.
     REJECT.
 
+  PURE DEFINITION PAIRING
+    Both hop_a and hop_b are dictionary-style definitions or glossary
+    entries (e.g. two vocabulary-matching pairs), with no narrative fact,
+    mechanism, or quantity connecting them to an actual situation in the
+    passage. That's vocabulary recall dressed up as two hops. REJECT.
+
   DECORATIVE HOP
     Read hop_b. If the question is fully answerable while ignoring it, it's
     decoration, not a real second hop. REJECT.

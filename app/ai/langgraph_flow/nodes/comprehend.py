@@ -33,19 +33,47 @@ _COMPREHEND_SYSTEM = """You are building a structured comprehension record of
 one passage of study material. This record will be used later to write exam
 questions, so it must be precise — a vague record produces vague questions.
 
-Extract:
+Source documents are often not uniform prose — a single passage might be a
+narrative, a dialogue, a vocabulary-matching exercise, a grammar reference
+table, or a fill-in-the-blank/listening exercise. Treating all of these the
+same way produces bad questions (quizzing on a glossary's own definitions
+as if they were facts about the world, or inventing an answer for a blank
+the passage never actually resolves). So FIRST, classify the passage:
+
+  narrative              — prose, dialogue, or a story: describes events,
+                           people, or a scenario.
+  reference              — a definition list, vocabulary-matching exercise,
+                           or grammar/summary table: states terms/facts
+                           directly, not embedded in a scenario.
+  unanswerable_exercise  — a fill-in-the-blank or listening exercise whose
+                           blanks are NOT resolved anywhere in this passage
+                           (answers depend on audio, an image, or a table the
+                           student fills in themselves). If you cannot find
+                           the actual answer to a blank anywhere in the
+                           visible text, the passage is this type.
+  mixed                  — genuinely contains more than one of the above.
+
+Then extract, according to type:
 
 CLAIMS — factual assertions the passage makes that carry explanatory weight.
-Skip claims too trivial to be worth testing.
+For `narrative` passages, prefer claims about what happened, why, or what it
+implies — not just restating a dialogue line. Skip claims too trivial to be
+worth testing.
 
 DEFINITIONS — terms the passage defines or uses in a specialized sense.
+Still extract these for `reference` passages (vocabulary-matching lists,
+glossaries) — but they are low-value in isolation; generate_questions will
+require pairing them with a narrative fact rather than testing them alone.
 
 MECHANISMS — causal or procedural chains: "A causes B, which leads to C
 under condition D." Write as ordered steps. These make the best exam
 questions, so look for them even if it takes rereading the passage.
 
 QUANTITIES — numbers, thresholds, or ranges, with what they measure and
-under what condition they were obtained.
+under what condition they were obtained. Do NOT invent a value to fill a
+blank the passage itself leaves unresolved (e.g. a listening exercise's
+"(1) ___ km") — if the value isn't stated anywhere in the passage, leave it
+out entirely.
 
 Every item must include `span`: the shortest verbatim quote (max 20 words)
 from the passage that supports it. If you cannot produce a span, drop the
@@ -53,6 +81,7 @@ item — do not include unsupported items.
 
 Return JSON:
 {
+  "content_type": "narrative | reference | unanswerable_exercise | mixed",
   "claims": [{"text": "", "span": ""}],
   "definitions": [{"term": "", "definition": "", "span": ""}],
   "mechanisms": [{"name": "", "steps": [""], "span": ""}],
@@ -74,8 +103,8 @@ def comprehend_chunks(state: PipelineState) -> dict:
     for i, chunk in enumerate(chunks):
         emit(state, f'Reading for comprehension ({i}/{n_chunks})…',
              0.25 + 0.15 * i / max(n_chunks, 1))
-        record = {'chunk_index': i, 'claims': [], 'definitions': [],
-                   'mechanisms': [], 'quantities': []}
+        record = {'chunk_index': i, 'content_type': 'narrative', 'claims': [],
+                   'definitions': [], 'mechanisms': [], 'quantities': []}
         try:
             resp = llm.invoke([
                 SystemMessage(content=_COMPREHEND_SYSTEM),
@@ -85,13 +114,20 @@ def comprehend_chunks(state: PipelineState) -> dict:
             if isinstance(parsed, dict):
                 record.update({k: parsed.get(k, []) for k in
                                ('claims', 'definitions', 'mechanisms', 'quantities')})
+                if parsed.get('content_type') in (
+                        'narrative', 'reference', 'unanswerable_exercise', 'mixed'):
+                    record['content_type'] = parsed['content_type']
         except Exception as exc:
             log.warning(f'comprehend_chunks: chunk {i + 1}/{n_chunks} failed: {exc!r}')
         records.append(record)
 
     total_items = sum(len(r['claims']) + len(r['definitions']) + len(r['mechanisms']) + len(r['quantities'])
                        for r in records)
-    log.info(f'comprehend_chunks: {total_items} items extracted across {n_chunks} chunks')
+    type_counts = {}
+    for r in records:
+        type_counts[r['content_type']] = type_counts.get(r['content_type'], 0) + 1
+    log.info(f'comprehend_chunks: {total_items} items extracted across {n_chunks} chunks, '
+             f'content types: {type_counts}')
     return {'chunk_records': records}
 
 

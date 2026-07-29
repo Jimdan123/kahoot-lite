@@ -7,7 +7,7 @@ Real-time multiplayer quiz app for Assignment 4.
 - **Auth:** Flask-Login (host-only accounts; players are anonymous with a nickname)
 - **Database:** Postgres via SQLAlchemy (required — no SQLite fallback)
 - **Frontend:** Jinja2 templates + Bootstrap 5 (CDN) + vanilla JS
-- **AI (Part 1.2):** LangGraph + Groq for PDF → question sets
+- **AI (Part 1.2):** LangGraph + Groq for PDF → question sets; local Tesseract OCR for scanned PDFs with no text layer
 
 ## Setup
 
@@ -23,6 +23,9 @@ brew install postgresql@14   # if not already installed
 brew services start postgresql@14
 psql -U "$(whoami)" -d postgres -c "CREATE ROLE kahoot_lite LOGIN PASSWORD 'kahoot_lite_dev';"
 psql -U "$(whoami)" -d postgres -c "CREATE DATABASE kahoot_lite OWNER kahoot_lite;"
+
+# 3b. Local Tesseract (one-time setup, needed for scanned-PDF uploads in Part 1.2)
+brew install tesseract tesseract-lang   # tesseract-lang adds non-English language data (e.g. Vietnamese)
 
 # 4. Configure environment
 cp .env.example .env

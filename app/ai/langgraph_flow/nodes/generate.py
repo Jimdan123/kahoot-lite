@@ -41,6 +41,14 @@ Valid pairings, in order of preference:
   3. A claim and the assumption or definition it depends on.
   4. Two claims that reinforce or sit in tension with each other.
 
+MIX YOUR REFERENCE TYPES — do not pair two DEFINITIONS together, and write
+at most one question per batch whose two hops are both DEFINITIONS. A
+definition should combine with a CLAIM, MECHANISM, or QUANTITY that puts it
+to use in context — e.g. "term X means Y" plus "the passage describes a
+situation where Y applies" — not two glossary entries stitched together. If
+the record is genuinely all definitions with nothing else to pair them with,
+write fewer questions rather than padding with definition-only pairs.
+
 FORBIDDEN — do not write:
   - pure recall ("What is X called?", "What did the passage say about Y?")
   - a question answerable from a single item in the record with the other
@@ -49,6 +57,8 @@ FORBIDDEN — do not write:
     keyword-matchable instead of requiring understanding)
   - "According to the passage/text..." style phrasing — the student never
     sees the source
+  - a question built entirely from two DEFINITION items (see MIX YOUR
+    REFERENCE TYPES above)
 
 Rules for the options:
   - Exactly 4 options, labelled A, B, C, D. Exactly one is correct.
@@ -76,6 +86,9 @@ Return a single JSON array. No prose, no code fences. Each element:
 def generate_questions(state: PipelineState) -> dict:
     chunks = state['chunks']
     comprehension = state.get('comprehension') or {}
+    chunk_records = state.get('chunk_records') or []
+    content_type_by_index = {r.get('chunk_index'): r.get('content_type', 'narrative')
+                              for r in chunk_records}
     n_chunks = len(chunks)
     emit(state, f'Connecting to Groq (0/{n_chunks})…', 0.45)
     try:
@@ -88,10 +101,18 @@ def generate_questions(state: PipelineState) -> dict:
     drafts: List[dict] = []
     first_error = None
     fail_count = 0
+    skipped_unanswerable = 0
 
     for i, chunk in enumerate(chunks):
         emit(state, f'Writing questions ({i}/{n_chunks})…',
              0.45 + 0.25 * i / max(n_chunks, 1))
+        if content_type_by_index.get(i) == 'unanswerable_exercise':
+            # Fill-in-blank/listening exercise whose answers depend on audio,
+            # an image, or a table the student fills in themselves — nothing
+            # in the text to ground a question in, so don't ask the LLM to
+            # invent one. Cheaper and safer than relying on the prompt alone.
+            skipped_unanswerable += 1
+            continue
         context = _build_context(i, comprehension)
         try:
             resp = llm.invoke([
@@ -118,9 +139,13 @@ def generate_questions(state: PipelineState) -> dict:
             log.warning(f'chunk {i + 1}/{n_chunks} failed: {first_error}')
             continue
 
+    if skipped_unanswerable:
+        log.info(f'generate_questions: skipped {skipped_unanswerable}/{n_chunks} '
+                  f'unanswerable_exercise chunks')
     emit(state, f'Drafted {len(drafts)} candidate questions.', 0.7)
 
-    if not drafts and first_error and fail_count == n_chunks:
+    attempted = n_chunks - skipped_unanswerable
+    if not drafts and first_error and attempted and fail_count == attempted:
         return {'draft_questions': [], 'error': f'All LLM calls failed. First error: {first_error}'}
 
     # Explicitly clear a stale error from an earlier failed attempt — LangGraph

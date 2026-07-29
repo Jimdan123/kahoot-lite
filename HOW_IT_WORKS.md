@@ -586,9 +586,14 @@ loop or save.
 ### Nodes, in order
 
 1. **extract_text** (`nodes/extract.py`) — `pdfplumber.open(...)`,
-   concatenate pages. Falls back to a vision-model OCR pass for scanned
-   PDFs with no text layer; fails cleanly with `state.error` if neither
-   produces text.
+   concatenate pages. Falls back to local Tesseract OCR (`pytesseract`,
+   `eng+vie` language data) for scanned PDFs with no text layer; fails
+   cleanly with `state.error` if neither produces text. Tesseract runs
+   entirely on the server's own CPU — no external API, no rate limit, no
+   cost per page. (An earlier version of this fallback asked a Groq vision
+   LLM to transcribe each page image; dropped after testing against a real
+   scanned textbook found it both hit Groq's free-tier rate limit almost
+   immediately and occasionally hallucinated text that wasn't in the image.)
 2. **chunk_by_topic** (`nodes/chunk.py`) — split by ~500 words. Drop chunks
    with fewer than 40 words (too thin to reason about).
 3. **comprehend_chunks** (`nodes/comprehend.py`) — per chunk, call Groq
@@ -687,11 +692,15 @@ The pipeline runs on Groq:
 
 | Env var | Client | Model default |
 |---|---|---|
-| `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile` (`qwen/qwen3.6-27b` for scanned-PDF OCR — the only vision-capable model Groq currently offers) |
+| `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile` |
+
+Scanned-PDF OCR does not go through Groq — it runs on local Tesseract
+(`pytesseract`, see the `extract_text` node above), so it has no LLM
+provider, model, or rate limit of its own.
 
 Groq's free tier needs no credit card (get a key at
 https://console.groq.com/keys). The model can be overridden via
-`GROQ_MODEL` (`GROQ_VISION_MODEL` for the OCR path). If the key isn't set,
+`GROQ_MODEL`. If the key isn't set,
 `run_pipeline` raises `RuntimeError` early — the `_worker` catches it and
 surfaces the message via `jobs.mark_failed`, so the user sees a clean error
 on the processing page instead of a 500.

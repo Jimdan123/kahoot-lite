@@ -21,15 +21,18 @@ MAX_RETRIES = 2
 DEFAULT_TIME_LIMIT = 20                  # seconds per generated question
 LLM_TEMPERATURE = 0.4                    # bit of variety for retry to actually differ
 LLM_TIMEOUT_SECONDS = 45                 # cap on any single LLM call
-MAX_OCR_PAGES = 15                       # cap on pages sent through vision-model OCR
-OCR_RESOLUTION = 150                     # dpi for page-image rendering
+MAX_OCR_PAGES = 15                       # cap on pages OCR'd per document (bounds per-job
+                                          # CPU time — local Tesseract has no per-page cost)
+OCR_RESOLUTION = 300                     # dpi for page-image rendering; Tesseract's
+                                          # recommended default for good accuracy
+OCR_LANGUAGES = 'eng+vie'                # tesseract language data — needs the matching
+                                          # tesseract-ocr-eng/tesseract-ocr-vie packages
 LLM_MAX_TOKENS = 4096                    # generous headroom for 3 MCQs w/ math notation —
                                           # 2048 was tight enough to truncate mid-question
 
 # Groq — see https://console.groq.com/docs/models for the current lineup;
 # check there before changing these, models get deprecated/renamed over time.
 DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile'         # text generation + grading
-DEFAULT_GROQ_VISION_MODEL = 'qwen/qwen3.6-27b'         # only vision-capable model on Groq currently
 
 
 def which_provider() -> Optional[str]:
