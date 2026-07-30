@@ -538,14 +538,15 @@ is created and cached in `room.questions`.
 
 ## 12. Where AI fits in (Part 1.2)
 
-The pipeline is live at `/ai/upload`. Hosts upload a PDF; the server runs an
-8-stage LangGraph agent (`app/ai/langgraph_flow/`, one module per stage)
-that extracts text, builds a structured understanding of it, drafts MCQs
-against *that* understanding rather than raw text, checks each question
-isn't answerable without the document, retries once or twice if too few
-survive, and saves the survivors as a new `QuestionSet` in the same table as
-manually-created ones — so the game loop doesn't know or care where the
-questions came from.
+The pipeline is live at `/ai/upload`. Hosts upload a PDF; the server runs a
+9-stage LangGraph agent (`app/ai/langgraph_flow/`, one module per stage)
+that extracts text, builds a structured understanding of it, optionally
+enriches thin/definitional documents with external "why does this matter"
+context, drafts MCQs against *that* understanding rather than raw text,
+checks each question isn't answerable without the document, retries once or
+twice if too few survive, and saves the survivors as a new `QuestionSet` in
+the same table as manually-created ones — so the game loop doesn't know or
+care where the questions came from.
 
 The extra structure exists to fight a specific failure mode: a single
 "read this paragraph, write a quiz question" prompt reliably produces recall
@@ -560,23 +561,36 @@ comprehension check.
   extract_text ──► chunk_by_topic ──► comprehend_chunks ──► merge_comprehension
                                                                     │
                                                                     ▼
+                                                            enrich_context
+                                                       (optional, thin docs
+                                                        + TAVILY_API_KEY only)
+                                                                    │
+                                                                    ▼
                                                        generate_practice_questions
                                                           (separate track, see below)
                                                                     │
                                                                     ▼
-                                                          generate_questions ◄──┐
-                                                                    │           │
-                                                                    ▼           │
-                                                            closed_book_check   │
-                                                                    │           │
-                                                                    ▼           │
-                                                              quality_check     │
-                                                               │        │       │
-                                                 enough pass  ▼        ▼ too few│
-                                                             save   bump_retry ─┘
-                                                              │      (loops back
-                                                              ▼       to generate,
-                                                             END      capped at 2)
+                                                          generate_questions ◄────────────┐
+                                                                    │                     │
+                                                                    ▼                     │
+                                                            closed_book_check             │
+                                                                    │                     │
+                                                                    ▼                     │
+                                                              quality_check               │
+                                                               │        │                 │
+                                                 enough pass  ▼        ▼ too few           │
+                                                             save    ┌─┴──────────────┐    │
+                                                              │      │                │    │
+                                                              ▼   not leaking      leaking  │
+                                                             END    heavily OR    heavily & │
+                                                                    already        not yet  │
+                                                                    enriched       enriched │
+                                                                       │                │   │
+                                                                       ▼                ▼   │
+                                                                  bump_retry ◄─ enrich_context_retry
+                                                                  (loops back    (same fn as enrich_context,
+                                                                   to generate,   optional/TAVILY_API_KEY-gated)
+                                                                   capped at 2)
 ```
 
 Each node is a function `PipelineState → dict-of-updates`. A retry only
@@ -614,7 +628,30 @@ loop or save.
    `existing_exercises` excerpts, both consumed by the practice track next.
    Falls back to a naive concatenation with no links if the LLM call fails,
    so a bad merge doesn't kill the run.
-5. **generate_practice_questions** (`nodes/practice.py`) — a track separate
+5. **enrich_context** (`nodes/enrich.py`) — OPTIONAL, registered as two graph
+   nodes pointing at the same function: `enrich_context` (here, before the
+   first `generate` attempt) and `enrich_context_retry` (in the retry path,
+   see item 10 below). No-ops for free (`search_context: []`) if
+   `TAVILY_API_KEY` isn't set — same optional-tier pattern as the
+   NVIDIA/OpenRouter fallback tiers in `llm_utils.py`. Otherwise checks two
+   INDEPENDENT triggers: (1) here, whether the merged comprehension record
+   looks "thin/definitional" (definitions make up
+   `THIN_DOCUMENT_DEFINITION_RATIO`+ of all extracted items); (2) in the
+   retry path, whether the most recent attempt's closed-book leak rate was
+   high (`HIGH_LEAK_RATIO`+ of drafts answerable without the document) —
+   added after testing against a real ADT/stack/queue lecture where trigger
+   1 alone missed the failure: a non-thin, claims-rich comprehension record
+   still leaked 9/9 on every attempt, because the topic itself is canonical
+   enough that any two-hop combination drawn from it is still guessable by
+   a closed-book model. Either trigger firing does one Tavily search on the
+   document's `topic`, then a `temperature=0.0` LLM call distills the raw
+   snippets into a short list of structured why/reason facts
+   (`search_context`) — set at most once per run (a second visit, e.g. the
+   retry-path node after the proactive one already fired, is a no-op).
+   Best-effort like `merge_comprehension`'s naive-merge fallback — any
+   failure (search or distillation) degrades to an empty list rather than
+   touching `state['error']`.
+6. **generate_practice_questions** (`nodes/practice.py`) — a track separate
    from the document-grounded questions below: writes extra EASY/MEDIUM/HARD
    practice problems on the document's `topic`, meant to be answerable from
    the model's own knowledge rather than requiring the document (the
@@ -627,7 +664,7 @@ loop or save.
    Additive and best-effort: any failure here yields an empty list rather
    than touching `state['error']`, since the main pipeline already produces
    a usable question set without it.
-6. **generate_questions** (`nodes/generate.py`) — for each chunk, call the
+7. **generate_questions** (`nodes/generate.py`) — for each chunk, call the
    LLM (`temperature=0.4`) with the chunk's local comprehension items *and*
    any cross-chunk links touching it. The system prompt enforces a two-hop
    rule (a question must combine two distinct facts — preferably a
@@ -637,23 +674,33 @@ loop or save.
    (`tests`) *before* the `question` field itself — field order matters
    because a model filling JSON top-to-bottom that writes `question` first
    will happily rationalize a hop after the fact instead of requiring one.
-7. **closed_book_check** (`nodes/critic.py`) — a *separate*, context-free
+   Also accepts a fifth pairing when `enrich_context` populated
+   `search_context` — a document DEFINITION plus an external WHY/REASON
+   fact — gated by a hard rule in the prompt that forbids ever pairing two
+   EXTERNAL CONTEXT facts together: at least one hop must always come from
+   the document's own comprehension record, or the question stops testing
+   whether the student read the upload at all.
+8. **closed_book_check** (`nodes/critic.py`) — a *separate*, context-free
    LLM call (`temperature=0.0`) tries to answer every draft using only
    general knowledge — it never sees the PDF or the comprehension record.
    Answer + confidence per question are recorded for the next stage.
-8. **quality_check** (`nodes/critic.py`) — another LLM call grades the
+9. **quality_check** (`nodes/critic.py`) — another LLM call grades the
    batch, rejecting on (in order): a closed-book leak — the context-free
    attempt matched the correct answer at medium/high confidence, meaning
    the question doesn't need the document at all — then structural issues
    (multiple correct options, option not in A–D, verbatim-repeated answer),
-   then a decorative second hop, then ambiguity. Falls back to structural
-   checks only if the critic call itself fails. Duplicates (by question
-   text, case-insensitive) collapse.
-9. **_should_retry** (conditional edge) — if fewer than 5 questions
-   survived and we've retried less than twice, jump to `bump_retry` →
-   `generate_questions` again (reusing the existing comprehension record).
-   Otherwise proceed to `save`.
-10. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
+   then pure/external-only definition pairing, then a decorative second
+   hop, then ambiguity. Falls back to structural checks only if the critic
+   call itself fails. Duplicates (by question text, case-insensitive)
+   collapse.
+10. **_should_retry** (conditional edge) — if fewer than 5 questions
+    survived and we've retried less than twice: if this attempt's
+    closed-book leak rate was high AND `search_context` hasn't been fetched
+    yet, jump to `enrich_context_retry` first (see item 5 above) then
+    `bump_retry` → `generate_questions`; otherwise jump straight to
+    `bump_retry` → `generate_questions` (reusing the existing comprehension
+    record either way). Otherwise proceed to `save`.
+11. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
     (document questions and practice questions together) in one
     transaction. Returns `question_set_id` to the caller.
 

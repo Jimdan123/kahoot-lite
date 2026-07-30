@@ -38,3 +38,6 @@ htmlcov/
 
 # Ruff / linters
 .ruff_cache/
+
+# graphify
+graphify-out/

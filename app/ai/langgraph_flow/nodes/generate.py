@@ -33,8 +33,11 @@ log = logging.getLogger('kahoot.ai')
 
 _GENERATE_SYSTEM = """You write multiple-choice quiz questions for classroom
 use. You are given a passage plus a structured comprehension record of it
-(claims, definitions, mechanisms, quantities), and possibly one or two LINKS
-to facts that live in a different part of the same document.
+(claims, definitions, mechanisms, quantities), possibly one or two LINKS to
+facts that live in a different part of the same document, and — only for
+documents that are thin on their own internal connections — an EXTERNAL
+CONTEXT block of background why/reason facts from a web search on the
+document's topic.
 
 Write {n} MCQs.
 
@@ -46,6 +49,11 @@ Valid pairings, in order of preference:
   2. A mechanism and the quantity/condition that constrains it.
   3. A claim and the assumption or definition it depends on.
   4. Two claims that reinforce or sit in tension with each other.
+  5. A document DEFINITION plus a WHY/REASON fact from EXTERNAL CONTEXT, if
+     given below — the definition supplies WHAT the term means; the
+     EXTERNAL CONTEXT fact supplies WHY it matters or how it's actually
+     used. Use this pairing only when EXTERNAL CONTEXT is present below AND
+     none of pairings 1-4 apply to this passage.
 
 MIX YOUR REFERENCE TYPES — do not pair two DEFINITIONS together, and write
 at most one question per batch whose two hops are both DEFINITIONS. A
@@ -53,7 +61,22 @@ definition should combine with a CLAIM, MECHANISM, or QUANTITY that puts it
 to use in context — e.g. "term X means Y" plus "the passage describes a
 situation where Y applies" — not two glossary entries stitched together. If
 the record is genuinely all definitions with nothing else to pair them with,
-write fewer questions rather than padding with definition-only pairs.
+write fewer questions rather than padding with definition-only pairs (unless
+pairing 5 above applies).
+
+HARD RULE — EXTERNAL CONTEXT IS NEVER BOTH HOPS: EXTERNAL CONTEXT exists
+ONLY to supply a WHY/REASON for a term the document itself defines. At most
+ONE of hop_a/hop_b may come from EXTERNAL CONTEXT. The OTHER hop MUST
+always be a DEFINITION, CLAIM, MECHANISM, QUANTITY, or LINK that is
+actually present in THIS passage's comprehension record — never invent a
+document-side hop, and never use two EXTERNAL CONTEXT facts together. A
+question that could be fully answered using EXTERNAL CONTEXT alone, with
+no real dependence on the document-side hop, tests general knowledge, not
+whether the student read this document, and defeats the entire point of a
+quiz generated from their upload. If you cannot find one genuine
+document-grounded hop to pair a WHY fact with, do not use EXTERNAL CONTEXT
+for that question at all — fall back to pairings 1-4, or write fewer
+questions.
 
 FORBIDDEN — do not write:
   - pure recall ("What is X called?", "What did the passage say about Y?")
@@ -65,6 +88,9 @@ FORBIDDEN — do not write:
     sees the source
   - a question built entirely from two DEFINITION items (see MIX YOUR
     REFERENCE TYPES above)
+  - a question where hop_a and hop_b are both EXTERNAL CONTEXT facts, or
+    where the document-side hop is decorative and the question is really
+    answerable from EXTERNAL CONTEXT alone (see HARD RULE above)
 
 Rules for the options:
   - Exactly 4 options, labelled A, B, C, D. Exactly one is correct.
@@ -90,8 +116,10 @@ question exists).
 
 Return a single JSON array. No prose, no code fences. Each element:
 {{
-  "hop_a": "<the first fact used, and where it's from>",
-  "hop_b": "<the second fact used, and where it's from>",
+  "hop_a": "<the first fact used, and where it's from — a DEFINITION/CLAIM/
+            MECHANISM/QUANTITY/LINK in the document, or EXTERNAL CONTEXT>",
+  "hop_b": "<the second fact used, and where it's from — same options as
+            hop_a; at least one of hop_a/hop_b must be document-side>",
   "tests": "<what a student who only knew hop_a would get wrong>",
   "question": "...",
   "A": "...", "B": "...", "C": "...", "D": "...",
@@ -132,7 +160,7 @@ def generate_questions(state: PipelineState) -> dict:
             # invent one. Cheaper and safer than relying on the prompt alone.
             skipped_unanswerable += 1
             continue
-        context = _build_context(i, comprehension)
+        context = _build_context(i, comprehension, state.get('search_context') or [])
         try:
             resp, parsed = invoke_json(llm, [
                 SystemMessage(content=_GENERATE_SYSTEM.format(n=QUESTIONS_PER_CHUNK)),
@@ -188,9 +216,10 @@ def _normalize_difficulty_and_time(q: dict) -> None:
     q['time_limit'] = max(MIN_TIME_LIMIT, min(MAX_TIME_LIMIT, time_limit))
 
 
-def _build_context(chunk_index: int, comprehension: dict) -> str:
+def _build_context(chunk_index: int, comprehension: dict, search_context: list) -> str:
     """Render the local comprehension items for this chunk, plus any
-    cross-chunk links touching it, as plain text to append to the prompt."""
+    cross-chunk links touching it and any external why/reason facts, as
+    plain text to append to the prompt."""
     lines = ['Comprehension record for this passage:']
 
     def _touches(indices_key: str, single_key: str, item: dict) -> bool:
@@ -221,4 +250,12 @@ def _build_context(chunk_index: int, comprehension: dict) -> str:
 
     if len(lines) == 1:
         lines.append('(no extracted items for this passage — read it directly)')
+
+    if search_context:
+        lines.append('')
+        lines.append('EXTERNAL CONTEXT (background only — from a web search on the '
+                      'document topic, NOT part of the document itself):')
+        for fact in search_context:
+            lines.append(f"- WHY: {fact.get('topic_term', '')} — {fact.get('fact', '')}")
+
     return '\n'.join(lines)

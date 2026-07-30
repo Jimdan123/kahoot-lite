@@ -5,28 +5,13 @@ from flask_login import current_user
 from flask_socketio import disconnect, emit, join_room
 from app.extensions import socketio
 from app.game import game_service
+from app.game import payloads
+from app.game.join_batcher import queue_player_joined
 
 
 # Grace period (seconds) beyond a question's time_limit within which the server
 # still accepts an answer, to absorb network jitter. Late answers are dropped.
 ANSWER_GRACE_SECONDS = 1.0
-
-# How long to hold a batch of joins open before broadcasting them as one
-# event. player_joined broadcasts to every socket in the room regardless of
-# payload size (O(n) fanout per call), so a burst of N simultaneous joins is
-# still O(n) broadcasts x O(n) recipients = O(n^2) deliveries even with a
-# tiny per-join payload. Batching turns that into O(bursts) broadcasts
-# instead of O(joins) — true O(n) total, not just a smaller constant. Cost:
-# a joining player's chip can take up to this long to show up on the host's
-# screen, which is imperceptible at this window and worth it for the burst
-# case; see _flush_pending_joins.
-JOIN_BATCH_WINDOW_SECONDS = 0.15
-
-# pin -> nicknames that joined since the last flush.
-_pending_joins: dict[str, list[str]] = {}
-# pin -> whether a flush is already scheduled, so a burst of joins schedules
-# exactly one background task instead of one per join.
-_flush_scheduled: dict[str, bool] = {}
 
 
 @socketio.on('host_join')
@@ -45,8 +30,8 @@ def on_host_join(data):
         return
     room.host_sid = request.sid
     join_room(room.pin)
-    emit('room_state', _room_state(room))
-    emit('player_list', _player_list(room))
+    emit('room_state', payloads.room_state(room))
+    emit('player_list', payloads.player_list(room))
     # Catch a reconnecting host up to the live phase — without this a host
     # whose tab refreshes mid-game falls back to the static lobby markup and
     # can accidentally hit "Start Game" again, which used to restart the
@@ -126,8 +111,8 @@ def on_player_join(data):
     # rejoin_token goes only to this socket, never broadcast.
     emit('joined', {'nickname': nickname, 'rejoin_token': player.rejoin_token})
     # Queue this join to go out in the next batch rather than broadcasting
-    # immediately (see JOIN_BATCH_WINDOW_SECONDS above for why). This used to
-    # be `socketio.emit('player_list', _player_list(room), room=pin)` —
+    # immediately (see join_batcher.py for why). This used to be
+    # `socketio.emit('player_list', payloads.player_list(room), room=pin)` —
     # resending and re-rendering the whole roster on every single join.
     # (Separate issue from find_active_by_nickname in game_service.py — that
     # one was an O(n) in-memory scan; this one is network I/O to every
@@ -138,32 +123,12 @@ def on_player_join(data):
     # so the rare case where a still-active reconnect queues this for a
     # nickname it never saw leave (the `active` branch above) can't produce
     # a duplicate chip.
-    _queue_player_joined(pin, nickname)
+    queue_player_joined(pin, nickname)
 
     # If this was a reconnect into a game-in-progress room, catch this socket
     # up to the current state so it isn't stranded on the waiting screen.
     if active or orphan:
         _resume_state_for_player(room, player)
-
-
-def _queue_player_joined(pin: str, nickname: str) -> None:
-    _pending_joins.setdefault(pin, []).append(nickname)
-    if not _flush_scheduled.get(pin):
-        _flush_scheduled[pin] = True
-        socketio.start_background_task(_flush_pending_joins, pin)
-
-
-def _flush_pending_joins(pin: str) -> None:
-    socketio.sleep(JOIN_BATCH_WINDOW_SECONDS)
-    # Grab-and-clear both bits of state before the emit below, which is the
-    # only line in this function that can yield to another greenlet — do it
-    # any later and a join arriving mid-flush could see `_flush_scheduled`
-    # still True, skip scheduling its own flush, and sit in `_pending_joins`
-    # with nothing left to ever send it (a lost-wakeup bug).
-    nicknames = _pending_joins.pop(pin, [])
-    _flush_scheduled.pop(pin, None)
-    if nicknames:
-        socketio.emit('players_joined', {'nicknames': nicknames}, room=pin)
 
 
 @socketio.on('start_game')
@@ -270,7 +235,7 @@ def _advance_to_question(room, index):
         p.last_answer = None
         p.last_answer_correct = None
     q = room.current_question()
-    socketio.emit('question_start', _question_payload(room, q, index), room=room.pin)
+    socketio.emit('question_start', payloads.question_payload(room, q, index), room=room.pin)
     # Server-side deadline enforcement for the *state transition*, not just
     # for scoring: previously only a host clicking "Reveal Answer" or every
     # player answering could end a question, so a question with an
@@ -308,38 +273,6 @@ def _end_game(room):
     socketio.emit('game_over', {'leaderboard': room.leaderboard()}, room=room.pin)
 
 
-def _room_state(room):
-    return {
-        'pin': room.pin,
-        'state': room.state,
-        'player_count': len(room.players),
-    }
-
-
-def _player_list(room):
-    return [{'nickname': p.nickname} for p in room.players.values()]
-
-
-def _question_payload(room, q, index):
-    """Shared shape for question_start, sent both on a fresh advance and on
-    a reconnect resume. time_left is computed server-side from the real
-    question_start_time (not just q['time_limit']) so a client that
-    reconnects mid-question is told the actual remaining time instead of a
-    fresh full countdown — the client turns this into a local deadline
-    (now + time_left) and re-derives "remaining" from that deadline on every
-    tick, so a backgrounded/throttled tab self-corrects instead of drifting."""
-    elapsed = time.time() - (room.question_start_time or time.time())
-    time_left = max(0.0, q['time_limit'] - elapsed)
-    return {
-        'index': index,
-        'total': len(room.questions),
-        'text': q['text'],
-        'options': q['options'],
-        'time_limit': q['time_limit'],
-        'time_left': round(time_left, 1),
-    }
-
-
 def _resume_state_for_player(room, player):
     """Emit just to the current socket enough state to render the current
     game phase, so a reconnected player lands on the right screen instead of
@@ -347,7 +280,7 @@ def _resume_state_for_player(room, player):
     if room.state == 'question':
         q = room.current_question()
         if q is not None:
-            payload = _question_payload(room, q, room.current_index)
+            payload = payloads.question_payload(room, q, room.current_index)
             # None if they hadn't answered yet; their previous choice
             # otherwise, so the client can lock the buttons.
             payload['resumed_answer'] = player.last_answer
@@ -371,7 +304,7 @@ def _resume_state_for_host(room):
     if room.state == 'question':
         q = room.current_question()
         if q is not None:
-            emit('question_start', _question_payload(room, q, room.current_index))
+            emit('question_start', payloads.question_payload(room, q, room.current_index))
     elif room.state == 'reveal':
         q = room.current_question()
         if q is not None:

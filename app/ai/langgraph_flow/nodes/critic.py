@@ -104,6 +104,12 @@ Apply these rejection tests, in order. Reject on the first failure.
     mechanism, or quantity connecting them to an actual situation in the
     passage. That's vocabulary recall dressed up as two hops. REJECT.
 
+  EXTERNAL-ONLY PAIRING
+    Both hop_a and hop_b are attributed to EXTERNAL CONTEXT (a web-search
+    background fact), with no hop actually grounded in the document's own
+    comprehension record. That means the question doesn't test the
+    document at all — REJECT.
+
   DECORATIVE HOP
     Read hop_b. If the question is fully answerable while ignoring it, it's
     decoration, not a real second hop. REJECT.

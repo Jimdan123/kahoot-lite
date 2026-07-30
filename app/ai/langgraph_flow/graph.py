@@ -11,22 +11,42 @@ Graph shape:
           |
      merge_comprehension    -- dedupe + find cross-chunk links (two-hop fuel)
           |
+     enrich_context         -- OPTIONAL: only if the doc looks
+          |                    thin/definitional up front, needs
+          |                    TAVILY_API_KEY — adds external "why"
+          |                    facts (nodes/enrich.py)
+          |
      practice               -- SEPARATE track: easy/med/hard practice Qs on
           |                    the topic, count chosen by the host
           |                    (nodes/practice.py)
-     generate_questions <───────────┐
-          |                         │
-     closed_book_check              │  retry if too few
-          |                         │  validated Qs and
-     quality_check                  │  retry budget left
-          │                         │
-          ├─ enough pass ─► save    │
-          └─ too few ─────────────► bump_retry ──┘
+     generate_questions <───────────────────────────┐
+          |                                         │
+     closed_book_check                              │  retry if too few
+          |                                         │  validated Qs and
+     quality_check                                  │  retry budget left
+          │                                         │
+          ├─ enough pass ─► save                    │
+          └─ too few ─┬─ not leaking heavily ──► bump_retry ──┘
+                       │
+                       └─ leaking heavily AND ──► enrich_context_retry ──┘
+                          not yet enriched            (same fn, retry-path
+                                                        trigger — see
+                                                        nodes/enrich.py)
 
 A retry only re-enters at generate_questions — comprehension is deterministic
 per document and expensive to redo, so a bad question-writing pass gets
 another shot at the (unchanged) comprehension record rather than re-reading
 the PDF. Retries are capped by `retry_count` in state (MAX_RETRIES).
+
+The retry decision has a third branch beyond plain retry/save: if a failed
+attempt's closed-book leak rate was high (most drafts were answerable
+without the document — see nodes/enrich.py's HIGH CLOSED-BOOK LEAK RATE
+trigger) and search_context hasn't been fetched yet, the retry goes through
+enrich_context_retry first. Confirmed necessary against a real ADT/stack/
+queue lecture where the thin-document check alone missed the failure: a
+non-thin, claims-rich comprehension record still leaked 9/9 on every
+attempt, because the topic itself is canonical enough that any two-hop
+combination drawn from it is still guessable by a closed-book model.
 
 `practice` runs once, is not retried, and never sets state['error'] on
 failure (see nodes/practice.py) — it's additive on top of the two-hop
@@ -50,6 +70,7 @@ from app.ai.langgraph_flow.config import (
 from app.ai.langgraph_flow.nodes.chunk import chunk_by_topic
 from app.ai.langgraph_flow.nodes.comprehend import comprehend_chunks, merge_comprehension
 from app.ai.langgraph_flow.nodes.critic import closed_book_check, quality_check
+from app.ai.langgraph_flow.nodes.enrich import enrich_context, needs_enrichment
 from app.ai.langgraph_flow.nodes.extract import extract_text
 from app.ai.langgraph_flow.nodes.generate import generate_questions
 from app.ai.langgraph_flow.nodes.practice import generate_practice_questions
@@ -63,9 +84,16 @@ log = logging.getLogger('kahoot.ai')
 def _should_retry(state: PipelineState) -> str:
     validated = state.get('validated_questions') or []
     retries = state.get('retry_count', 0)
-    if len(validated) < MIN_ACCEPTED_QUESTIONS and retries < MAX_RETRIES:
-        return 'retry'
-    return 'save'
+    if len(validated) >= MIN_ACCEPTED_QUESTIONS or retries >= MAX_RETRIES:
+        return 'save'
+    # A failed attempt with a high closed-book leak rate gets one shot at
+    # external WHY context before the plain retry — see nodes/enrich.py's
+    # HIGH CLOSED-BOOK LEAK RATE trigger. Skipped once search_context is
+    # already populated (either this fired earlier, or the proactive
+    # thin-doc check already did) so a run never searches twice.
+    if not state.get('search_context') and needs_enrichment(state):
+        return 'enrich_then_retry'
+    return 'retry'
 
 
 def _bump_retry(state: PipelineState) -> dict:
@@ -79,6 +107,11 @@ def _build_graph():
     graph.add_node('chunk', chunk_by_topic)
     graph.add_node('comprehend', comprehend_chunks)
     graph.add_node('merge_comprehension', merge_comprehension)
+    graph.add_node('enrich_context', enrich_context)
+    # Same function, registered under a second name for the retry-path
+    # trigger — see nodes/enrich.py's module docstring for why one node
+    # can't serve both call sites (different outgoing edges).
+    graph.add_node('enrich_context_retry', enrich_context)
     graph.add_node('practice', generate_practice_questions)
     graph.add_node('generate', generate_questions)
     graph.add_node('closed_book', closed_book_check)
@@ -90,14 +123,17 @@ def _build_graph():
     graph.add_edge('extract', 'chunk')
     graph.add_edge('chunk', 'comprehend')
     graph.add_edge('comprehend', 'merge_comprehension')
-    graph.add_edge('merge_comprehension', 'practice')
+    graph.add_edge('merge_comprehension', 'enrich_context')
+    graph.add_edge('enrich_context', 'practice')
     graph.add_edge('practice', 'generate')
     graph.add_edge('generate', 'closed_book')
     graph.add_edge('closed_book', 'quality')
     graph.add_conditional_edges('quality', _should_retry, {
+        'enrich_then_retry': 'enrich_context_retry',
         'retry': 'bump_retry',
         'save': 'save',
     })
+    graph.add_edge('enrich_context_retry', 'bump_retry')
     graph.add_edge('bump_retry', 'generate')
     graph.add_edge('save', END)
     return graph.compile()

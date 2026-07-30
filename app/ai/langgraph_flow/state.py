@@ -17,6 +17,8 @@ class PipelineState(TypedDict, total=False):
 
     chunk_records: List[dict]            # after comprehend_chunks — one record per chunk
     comprehension: dict                  # after merge_comprehension — deduped + cross-chunk links
+    search_context: List[dict]           # after enrich_context — optional external "why" facts;
+                                          # [] if the doc wasn't thin or TAVILY_API_KEY is unset
 
     draft_questions: List[dict]          # after generate_questions
     closed_book_results: List[dict]      # after closed_book_check, aligned with draft_questions

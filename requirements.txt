@@ -22,6 +22,7 @@ langchain-groq>=0.2.0
 langchain-openai>=0.2.0       # NVIDIA NIM fallback tier — OpenAI-compatible endpoint, see llm_utils.py
 pdfplumber>=0.11.0
 pytesseract>=0.3.10           # wraps the `tesseract` system binary — see README/Dockerfile
+tavily-python>=0.5.0          # optional enrich_context node — see nodes/enrich.py; needs TAVILY_API_KEY
 
 # Dev tools
 ruff>=0.6.0

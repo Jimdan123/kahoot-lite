@@ -22,7 +22,7 @@ from flask_login import current_user, login_required
 
 from app.ai import ai_bp
 from app.ai import jobs
-from app.ai.langgraph_flow import run_pipeline
+from app.ai.langgraph_flow import run_pipeline, which_provider
 from app.ai.langgraph_flow.config import (
     MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY,
     MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
@@ -40,11 +40,10 @@ PDF_MAGIC = b'%PDF-'
 @limiter.limit('5 per hour; 2 per minute', methods=['POST'])
 def upload():
     if request.method == 'GET':
-        from app.ai.langgraph_flow import _which_provider
         return render_template(
             'ai/upload.html',
-            enabled=_which_provider() is not None,
-            provider=_which_provider(),
+            enabled=which_provider() is not None,
+            provider=which_provider(),
             practice_default=PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_min=MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_max=MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY,
