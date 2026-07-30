@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
 
 from app.ai.langgraph_flow.config import (
     GROQ_MODEL_CHAIN,
@@ -109,6 +111,48 @@ def _transient_errors():
     )
 
 
+# Process-wide, not per-_RotatingLLM: (provider, model) -> unix timestamp
+# it becomes worth retrying. A daily-quota RateLimitError doesn't clear for
+# hours, but make_llm() builds a FRESH _RotatingLLM (starting back at chain
+# index 0) for every pipeline node — without this cache, every single node
+# call would re-waste a round trip on a model already known dead for the
+# rest of the day before falling through to whatever tier actually works,
+# which dominates the logs and adds latency to every node for no benefit.
+# Per-minute limits still self-heal normally: the cached expiry is the
+# provider's own reported wait time, so once it elapses the model is tried
+# again like nothing happened.
+_exhausted_until: dict = {}
+
+_RETRY_AFTER_RE = re.compile(r'try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s')
+
+
+def _parse_retry_after(message: str) -> float:
+    """Extract a "try again in <Xh><Ym>Z.zs" duration (Groq/OpenAI's
+    rate-limit message shape) in seconds. A default of 30s on no match
+    means a future error-message format change costs one extra wasted
+    retry, not a model getting stuck uncached forever."""
+    m = _RETRY_AFTER_RE.search(message)
+    if not m:
+        return 30.0
+    hours, minutes, seconds = m.groups()
+    return (int(hours or 0) * 3600) + (int(minutes or 0) * 60) + float(seconds)
+
+
+def _mark_exhausted(provider: str, model: str, exc: Exception) -> None:
+    """Cache (provider, model) as not-worth-retrying until the provider's
+    own reported wait time elapses. Only for RateLimitError — auth/
+    permission/connection errors aren't time-based, so waiting doesn't fix
+    them; caching those would just delay a legitimate retry once the real
+    problem (bad key, network blip) is fixed."""
+    import groq
+    import openai
+    if not isinstance(exc, (groq.RateLimitError, openai.RateLimitError)):
+        return
+    wait = _parse_retry_after(str(exc))
+    _exhausted_until[(provider, model)] = time.time() + wait
+    log.info(f'llm rotation: caching {provider}:{model} as exhausted for {wait:.0f}s')
+
+
 class _RotatingLLM:
     """Wraps a chain of (provider, model) pairs and falls back to the next
     one if the current one's rate limit / daily token quota is exhausted,
@@ -117,9 +161,12 @@ class _RotatingLLM:
 
     Once a call falls back to a later entry, this instance keeps using it
     for the rest of its calls instead of re-hitting the exhausted one every
-    time — but a fresh make_llm() call (the next pipeline node) starts back
-    at the front of the chain, since per-minute limits may have reset by
-    then.
+    time — and a fresh make_llm() call (the next pipeline node) still
+    starts back at the front of the chain (a per-minute limit may have
+    reset by then), but a module-level cache (_exhausted_until) skips any
+    entry still inside its own reported wait time instead of re-attempting
+    it for real, so a daily-quota outage doesn't cost one wasted round trip
+    per node for the rest of the day.
     """
 
     def __init__(self, chain: list, temperature: float, timeout: float):
@@ -164,14 +211,27 @@ class _RotatingLLM:
         last_exc = None
         committed = False
         fallback = None
-        for idx in range(self._idx, len(self._chain)):
+        remaining = list(range(self._idx, len(self._chain)))
+        for pos, idx in enumerate(remaining):
             provider, model = self._chain[idx]
+            # Always really attempt the LAST remaining entry even if cached
+            # as exhausted, so there's always at least one real attempt (and
+            # therefore a real exception to raise below) if every entry is
+            # cached — otherwise an all-exhausted chain would fall through
+            # this loop with last_exc still None.
+            is_last = pos == len(remaining) - 1
+            until = _exhausted_until.get((provider, model), 0.0)
+            if not is_last and until > time.time():
+                log.info(f'llm rotation: skipping {provider}:{model} (known exhausted '
+                         f'for {until - time.time():.0f}s more), trying next in chain')
+                continue
             try:
                 resp = self._client_for(idx).invoke(messages)
             except transient as exc:
                 last_exc = exc
                 log.warning(f'llm rotation: {provider}:{model} unavailable '
                             f'({type(exc).__name__}: {exc}), trying next in chain')
+                _mark_exhausted(provider, model, exc)
                 continue
             if not committed and idx != self._idx:
                 log.warning(f'llm rotation: switched to {provider}:{model} '
