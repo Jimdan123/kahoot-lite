@@ -685,14 +685,22 @@ loop or save.
    general knowledge — it never sees the PDF or the comprehension record.
    Answer + confidence per question are recorded for the next stage.
 9. **quality_check** (`nodes/critic.py`) — another LLM call grades the
-   batch, rejecting on (in order): a closed-book leak — the context-free
-   attempt matched the correct answer at medium/high confidence, meaning
-   the question doesn't need the document at all — then structural issues
-   (multiple correct options, option not in A–D, verbatim-repeated answer),
-   then pure/external-only definition pairing, then a decorative second
-   hop, then ambiguity. Falls back to structural checks only if the critic
-   call itself fails. Duplicates (by question text, case-insensitive)
-   collapse.
+   batch, rejecting on (in order): structural issues (multiple correct
+   options, option not in A–D, verbatim-repeated answer), then
+   pure/external-only definition pairing, then a decorative second hop,
+   then ambiguity. Falls back to structural checks only if the critic call
+   itself fails. Duplicates (by question text, case-insensitive) collapse.
+   A closed-book leak is **not** one of the critic's rejection tests —
+   whether a draft leaked is computed separately, in Python, straight from
+   `closed_book_check`'s own results. A leaked-but-otherwise-valid question
+   is kept and tagged `source='closed_book'` (persisted on the `Question`
+   row, shown as a badge in the quiz editor) rather than discarded — the
+   two-hop reasoning is often still genuine even when the answer also
+   happens to be common knowledge, and discarding it outright was the
+   single biggest cause of low yield on canonical material (verified: the
+   ADT/stacks/queues test PDF used throughout development went from
+   maxing out at 2/9 validated questions after every retry to 9/9 on the
+   very first attempt once leaked questions stopped being thrown away).
 10. **_should_retry** (conditional edge) — if fewer than 5 questions
     survived and we've retried less than twice: if this attempt's
     closed-book leak rate was high AND `search_context` hasn't been fetched
@@ -702,7 +710,9 @@ loop or save.
     record either way). Otherwise proceed to `save`.
 11. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
     (document questions and practice questions together) in one
-    transaction. Returns `question_set_id` to the caller.
+    transaction. Each row's `source` column is set to `'closed_book'` if
+    `quality_check` tagged it that way, else left null. Returns
+    `question_set_id` to the caller.
 
 Every LLM call above — not just `generate_questions` — goes through
 `invoke_json` (see **Model rotation & fallback** below), so a bad or
@@ -821,9 +831,17 @@ an entry for two different reasons, handled two different ways:
    chain`, and moves on. Once it lands on a working entry, it **commits** —
    `self._idx` moves forward permanently for the rest of this
    `_RotatingLLM` instance's life, so a node processing many chunks doesn't
-   re-hit an exhausted model on every single chunk. (A fresh node still
+   re-hit an exhausted model on every single chunk. A fresh node still
    starts a fresh `make_llm()` back at the front of the chain, since
-   per-minute limits may have reset by then.)
+   per-minute limits may have reset by then — but a **process-wide cache**
+   (`_exhausted_until`, keyed by `(provider, model)`) remembers a
+   `RateLimitError`'s own reported "try again in Xh Ym Z.zs" wait time and
+   skips that entry with no HTTP call at all until it elapses, so a
+   *daily*-quota outage (which won't have cleared by the next node) doesn't
+   cost one wasted round trip per node for the rest of the day. The very
+   last remaining entry in any given rotation is always attempted for
+   real regardless of the cache, so there's always a genuine exception to
+   raise if literally everything is exhausted.
 2. **The provider responded, but the response is useless** — empty or
    truncated JSON. This one is easy to miss: a reasoning model like
    `qwen/qwen3.6-27b` writes a hidden `<think>...</think>` scratchpad before
@@ -836,11 +854,29 @@ an entry for two different reasons, handled two different ways:
    `invoke()`**: it parses the response internally, and if parsing comes
    back empty, retries the *same request* on the next model in the chain
    rather than accepting the empty result as this chunk's final answer. As
-   a targeted fix for the qwen case specifically, `_client_for` also passes
-   `reasoning_effort='none'` to any Groq model with `qwen` in its name,
-   which turns off the scratchpad entirely (verified live: same prompt went
-   from an empty response to clean JSON in under a second). Unlike a
-   transient API error, one bad parse doesn't mean the model is
+   a targeted fix for the qwen case specifically, `_build_groq_client` also
+   passes `reasoning_effort='none'` to any Groq model with `qwen` in its
+   name, which turns off the scratchpad entirely (verified live: same
+   prompt went from an empty response to clean JSON in under a second).
+
+   `openai/gpt-oss-20b:free` (OpenRouter) hits the same class of failure —
+   verified live against the actual `generate_questions` prompt: with no
+   override, its *default* reasoning effort consumed 76% of a 3307-token
+   completion on hidden reasoning alone, and on a longer real chunk that
+   reliably exhausted the whole budget with nothing left for the answer.
+   Unlike qwen, the fix here is NOT to turn reasoning off — this pipeline's
+   whole design depends on genuine reasoning, and cutting effort to `'low'`
+   was tried and rejected (it cut reasoning by 87% and visibly shallowed
+   the output). `_build_openai_compatible` instead sets `reasoning:
+   {'effort': 'medium'}` (a ~14% trim, verified to still produce
+   well-formed two-hop questions) *and* doubles `max_tokens` for that model
+   specifically as extra headroom — free-tier model, no cost downside to
+   the bigger ceiling. Scoped to models with `gpt-oss` in the name so
+   NVIDIA's stricter NIM endpoint, which has rejected an unrelated extra
+   parameter on a different model before, never receives a field it wasn't
+   verified to accept.
+
+   Unlike a transient API error, one bad parse doesn't mean the model is
    exhausted — `invoke_json()` does **not** permanently advance `self._idx`
    for that reason, so the next unrelated call still gives that model a
    fresh try.
