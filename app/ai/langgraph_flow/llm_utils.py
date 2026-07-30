@@ -65,7 +65,7 @@ def _build_openai_compatible(base_url: str, api_key_env: str):
     to one OpenAI-compatible endpoint (NVIDIA NIM, OpenRouter, ...)."""
     def build(model: str, temperature: float, timeout: float):
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
+        kwargs = dict(
             model=model,
             base_url=base_url,
             api_key=os.environ.get(api_key_env),
@@ -73,6 +73,28 @@ def _build_openai_compatible(base_url: str, api_key_env: str):
             max_tokens=LLM_MAX_TOKENS,
             timeout=timeout,
         )
+        if 'gpt-oss' in model.lower():
+            # gpt-oss is a reasoning model that burns completion tokens on a
+            # hidden reasoning pass before the visible answer — verified live
+            # against this pipeline's actual two-hop generate prompt: with no
+            # override, the DEFAULT reasoning effort consumed 2524 of a
+            # 3307-token completion (76%) on reasoning alone, and on a longer
+            # real PDF chunk that reliably blew the whole max_tokens budget
+            # with nothing left for the answer (0-char response, unparseable
+            # — the exact failure this fixes).
+            #
+            # 'low' effort cut reasoning by 87% (2524 -> 320 tokens) but was
+            # rejected as making the model too shallow for a prompt whose
+            # whole point is genuine two-hop reasoning, not just valid JSON.
+            # 'medium' only trims it ~14% (2524 -> 2180) and verified-produced
+            # well-formed questions with real hop_a/hop_b combination, not
+            # degraded — the right tradeoff. Doubling max_tokens on top is
+            # extra headroom for a harder real chunk to still not exhaust the
+            # budget even at that modest trim; free-tier model, no cost
+            # downside to the bigger ceiling.
+            kwargs['extra_body'] = {'reasoning': {'effort': 'medium'}}
+            kwargs['max_tokens'] = LLM_MAX_TOKENS * 2
+        return ChatOpenAI(**kwargs)
     return build
 
 
