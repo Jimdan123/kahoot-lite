@@ -22,3 +22,15 @@ services:
           property: connectionString
       - key: GROQ_API_KEY
         sync: false
+      # Optional fallback tiers (see app/ai/langgraph_flow/llm_utils.py) —
+      # each one silently no-ops without its key, but declaring them here
+      # means Render's dashboard prompts for a value on the next deploy
+      # instead of the tier quietly never activating.
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # Optional — enrich_context node (thin/definitional or leaky-retry
+      # documents), see app/ai/langgraph_flow/nodes/enrich.py.
+      - key: TAVILY_API_KEY
+        sync: false
