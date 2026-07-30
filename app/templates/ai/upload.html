@@ -38,6 +38,19 @@
                 <label class="form-label">Description (optional)</label>
                 <textarea name="description" class="form-control" rows="2" maxlength="500"></textarea>
             </div>
+            <div class="mb-3">
+                <label class="form-label">Practice questions per difficulty</label>
+                <select name="practice_count" class="form-select">
+                    {% for i in range(practice_min, practice_max + 1) %}
+                    <option value="{{ i }}" {% if i == practice_default %}selected{% endif %}>{{ i }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-text">
+                    In addition to the document's own questions, the AI writes this many
+                    extra EASY, MEDIUM, and HARD practice questions each on the document's
+                    topic — e.g. 2 means 6 total (2 easy + 2 medium + 2 hard).
+                </div>
+            </div>
             <button type="submit" class="btn btn-primary btn-lg">Generate</button>
             <p class="text-muted mt-3 mb-0 small">
                 Processing usually takes 20-60 seconds depending on document size.

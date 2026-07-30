@@ -22,8 +22,8 @@ from app.ai.langgraph_flow.config import (
     MIN_TIME_LIMIT,
     QUESTIONS_PER_CHUNK,
 )
-from app.ai.langgraph_flow.json_utils import parse_llm_json, content_to_text
-from app.ai.langgraph_flow.llm_utils import make_llm
+from app.ai.langgraph_flow.json_utils import content_to_text
+from app.ai.langgraph_flow.llm_utils import invoke_json, make_llm
 from app.ai.langgraph_flow.progress import emit
 from app.ai.langgraph_flow.state import PipelineState
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -134,11 +134,10 @@ def generate_questions(state: PipelineState) -> dict:
             continue
         context = _build_context(i, comprehension)
         try:
-            resp = llm.invoke([
+            resp, parsed = invoke_json(llm, [
                 SystemMessage(content=_GENERATE_SYSTEM.format(n=QUESTIONS_PER_CHUNK)),
                 HumanMessage(content=f'Passage:\n\n{chunk}\n\n{context}'),
             ])
-            parsed = parse_llm_json(resp.content)
             log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
             if not parsed:
                 raise ValueError(

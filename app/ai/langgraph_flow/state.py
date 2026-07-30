@@ -10,6 +10,7 @@ class PipelineState(TypedDict, total=False):
     owner_id: int                        # input
     quiz_name: str                       # input
     quiz_description: str                # input
+    practice_questions_per_difficulty: int  # input — see config.PRACTICE_QUESTIONS_PER_DIFFICULTY
 
     raw_text: str                        # after extract
     chunks: List[str]                    # after chunk_by_topic

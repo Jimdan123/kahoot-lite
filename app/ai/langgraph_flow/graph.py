@@ -11,8 +11,9 @@ Graph shape:
           |
      merge_comprehension    -- dedupe + find cross-chunk links (two-hop fuel)
           |
-     practice               -- SEPARATE track: web-searched easy/med/hard
-          |                    practice Qs on the topic (nodes/practice.py)
+     practice               -- SEPARATE track: easy/med/hard practice Qs on
+          |                    the topic, count chosen by the host
+          |                    (nodes/practice.py)
      generate_questions <───────────┐
           |                         │
      closed_book_check              │  retry if too few
@@ -40,7 +41,12 @@ from typing import Callable, Optional
 
 from langgraph.graph import END, StateGraph
 
-from app.ai.langgraph_flow.config import MAX_RETRIES, MIN_ACCEPTED_QUESTIONS, which_provider
+from app.ai.langgraph_flow.config import (
+    MAX_RETRIES,
+    MIN_ACCEPTED_QUESTIONS,
+    PRACTICE_QUESTIONS_PER_DIFFICULTY,
+    which_provider,
+)
 from app.ai.langgraph_flow.nodes.chunk import chunk_by_topic
 from app.ai.langgraph_flow.nodes.comprehend import comprehend_chunks, merge_comprehension
 from app.ai.langgraph_flow.nodes.critic import closed_book_check, quality_check
@@ -112,6 +118,7 @@ def run_pipeline(
     owner_id: int,
     quiz_name: str = '',
     quiz_description: str = '',
+    practice_questions_per_difficulty: int = PRACTICE_QUESTIONS_PER_DIFFICULTY,
     progress_cb: Optional[Callable[[str, float], None]] = None,
 ) -> int:
     """Run the pipeline synchronously and return the created QuestionSet id.
@@ -130,6 +137,7 @@ def run_pipeline(
         'owner_id': owner_id,
         'quiz_name': quiz_name,
         'quiz_description': quiz_description,
+        'practice_questions_per_difficulty': practice_questions_per_difficulty,
         'retry_count': 0,
         'progress_cb': progress_cb,
     }

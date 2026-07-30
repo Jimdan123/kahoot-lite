@@ -13,8 +13,7 @@ import json
 import logging
 from typing import List
 
-from app.ai.langgraph_flow.json_utils import parse_llm_json
-from app.ai.langgraph_flow.llm_utils import make_llm
+from app.ai.langgraph_flow.llm_utils import invoke_json, make_llm
 from app.ai.langgraph_flow.progress import emit
 from app.ai.langgraph_flow.state import PipelineState
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -32,6 +31,8 @@ Input: a JSON array of {"index": 0, "question": "", "A": "", "B": "", "C": "", "
 
 Return a JSON array, same length and order as the input. Each element:
 {"answer": "A | B | C | D | unknown", "confidence": "high | medium | low"}
+No prose, no code fences, no explanation after the array — the array is the
+entire response.
 
 Confidence reflects how sure you are of your chosen answer. If the options
 all seem equally plausible without having read the source, answer "unknown"
@@ -52,11 +53,10 @@ def closed_book_check(state: PipelineState) -> dict:
     ]
     llm = make_llm(temperature=0.0)
     try:
-        resp = llm.invoke([
+        resp, results = invoke_json(llm, [
             SystemMessage(content=_CLOSED_BOOK_SYSTEM),
             HumanMessage(content=json.dumps(items, ensure_ascii=False)),
         ])
-        results = parse_llm_json(resp.content)
         if not isinstance(results, list) or len(results) != len(drafts):
             raise ValueError(f'expected {len(drafts)} results, got '
                               f'{len(results) if isinstance(results, list) else type(results)}')
@@ -118,6 +118,8 @@ Input: a JSON array of question records (see fields above).
 
 Return a JSON array, same length and order as the input. Each element:
 {"verdict": "accept | reject", "reason": "<one short phrase>"}
+No prose, no code fences, no explanation after the array — the array is the
+entire response.
 
 Be strict about the closed-book leak test especially — it's the single best
 signal a question doesn't actually require this document. Expect to reject
@@ -145,11 +147,10 @@ def quality_check(state: PipelineState) -> dict:
 
     llm = make_llm(temperature=0.0)  # deterministic grading
     try:
-        resp = llm.invoke([
+        resp, verdicts = invoke_json(llm, [
             SystemMessage(content=_CRITIC_SYSTEM),
             HumanMessage(content=json.dumps(items, ensure_ascii=False)),
         ])
-        verdicts = parse_llm_json(resp.content)
         if not isinstance(verdicts, list) or len(verdicts) != len(drafts):
             raise ValueError('critic response malformed')
         keep = [q for q, v in zip(drafts, verdicts)

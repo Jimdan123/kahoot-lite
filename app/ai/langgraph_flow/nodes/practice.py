@@ -28,8 +28,7 @@ from app.ai.langgraph_flow.config import (
     MIN_TIME_LIMIT,
     PRACTICE_QUESTIONS_PER_DIFFICULTY,
 )
-from app.ai.langgraph_flow.json_utils import parse_llm_json
-from app.ai.langgraph_flow.llm_utils import make_llm
+from app.ai.langgraph_flow.llm_utils import invoke_json, make_llm
 from app.ai.langgraph_flow.progress import emit
 from app.ai.langgraph_flow.state import PipelineState
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -100,7 +99,7 @@ def generate_practice_questions(state: PipelineState) -> dict:
         log.info('generate_practice_questions: no topic available, skipping practice track')
         return {'practice_questions': []}
 
-    n = PRACTICE_QUESTIONS_PER_DIFFICULTY
+    n = state.get('practice_questions_per_difficulty') or PRACTICE_QUESTIONS_PER_DIFFICULTY
     total = n * 3
     emit(state, f'Writing {total} extra practice problems on the topic…', 0.42)
 
@@ -112,12 +111,11 @@ def generate_practice_questions(state: PipelineState) -> dict:
 
     try:
         llm = make_llm(temperature=0.4)
-        resp = llm.invoke([
+        resp, parsed = invoke_json(llm, [
             SystemMessage(content=_PRACTICE_SYSTEM.format(
                 topic=topic, existing_block=existing_block, n=n, total=total)),
             HumanMessage(content='Write the practice questions now.'),
         ])
-        parsed = parse_llm_json(resp.content)
         if not isinstance(parsed, list):
             raise ValueError('practice response was not a JSON array')
     except Exception as exc:

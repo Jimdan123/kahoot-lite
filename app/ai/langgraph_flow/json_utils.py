@@ -64,12 +64,25 @@ def parse_llm_json(raw):
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        # The two real causes look identical from the caller's side (an empty
-        # list) unless we log the actual parse error here: either the
-        # response got cut off before the JSON closed (exc.pos lands at/near
-        # the end of `text` — raise LLM_MAX_TOKENS) or the model slipped an
-        # invalid escape (e.g. raw LaTeX "\Var") into a string value
-        # (exc.pos lands mid-string). Logging a window around exc.pos
+        if exc.msg == 'Extra data':
+            # The model finished a complete, valid JSON value and then kept
+            # going — e.g. tacking on "Explanation: ..." afterward instead of
+            # stopping (seen live from a fallback-tier model on closed_book_check/
+            # quality_check, whose prompts don't say "no prose" as explicitly as
+            # generate.py's does). exc.pos is exactly where the trailing text
+            # starts, so the JSON before it parsed fine — recover that instead
+            # of discarding a perfectly good response and burning a rotation to
+            # the next model over a chatty model, not a broken one.
+            try:
+                return json.loads(text[:exc.pos])
+            except json.JSONDecodeError:
+                pass
+        # The two remaining real causes look identical from the caller's side
+        # (an empty list) unless we log the actual parse error here: either
+        # the response got cut off before the JSON closed (exc.pos lands
+        # at/near the end of `text` — raise LLM_MAX_TOKENS) or the model
+        # slipped an invalid escape (e.g. raw LaTeX "\Var") into a string
+        # value (exc.pos lands mid-string). Logging a window around exc.pos
         # distinguishes them at a glance instead of guessing.
         window = text[max(0, exc.pos - 40):exc.pos + 40]
         log.warning(f'parse_llm_json: {exc} — near {window!r} (total {len(text)} chars)')

@@ -560,6 +560,10 @@ comprehension check.
   extract_text ──► chunk_by_topic ──► comprehend_chunks ──► merge_comprehension
                                                                     │
                                                                     ▼
+                                                       generate_practice_questions
+                                                          (separate track, see below)
+                                                                    │
+                                                                    ▼
                                                           generate_questions ◄──┐
                                                                     │           │
                                                                     ▼           │
@@ -596,33 +600,48 @@ loop or save.
    immediately and occasionally hallucinated text that wasn't in the image.)
 2. **chunk_by_topic** (`nodes/chunk.py`) — split by ~500 words. Drop chunks
    with fewer than 40 words (too thin to reason about).
-3. **comprehend_chunks** (`nodes/comprehend.py`) — per chunk, call Groq
+3. **comprehend_chunks** (`nodes/comprehend.py`) — per chunk, call the LLM
    (`temperature=0.0`) to extract *claims*, *definitions*, *mechanisms*, and
    *quantities*, each anchored to a verbatim quote (`span`) from the chunk.
    No questions are written yet — this stage only builds understanding.
-4. **merge_comprehension** (`nodes/comprehend.py`) — one Groq call over all
+4. **merge_comprehension** (`nodes/comprehend.py`) — one LLM call over all
    per-chunk records together: dedupes repeated facts, flags terms used but
    never defined anywhere (`undefined_terms`), and — the important part —
    finds **cross-chunk links**: pairs of facts in *different* chunks that
    actually connect (a mechanism's triggering condition quantified
    elsewhere, a term defined in one chunk and relied on by a claim in
-   another). Falls back to a naive concatenation with no links if the LLM
-   call fails, so a bad merge doesn't kill the run.
-5. **generate_questions** (`nodes/generate.py`) — for each chunk, call Groq
-   (Llama 3.3 70B, `temperature=0.4`) with the chunk's local comprehension
-   items *and* any cross-chunk links touching it. The system prompt enforces
-   a two-hop rule (a question must combine two distinct facts — preferably
-   a cross-chunk link, otherwise two local items), forbids pure recall and
+   another). Also collects a short `topic` phrase and up to 8
+   `existing_exercises` excerpts, both consumed by the practice track next.
+   Falls back to a naive concatenation with no links if the LLM call fails,
+   so a bad merge doesn't kill the run.
+5. **generate_practice_questions** (`nodes/practice.py`) — a track separate
+   from the document-grounded questions below: writes extra EASY/MEDIUM/HARD
+   practice problems on the document's `topic`, meant to be answerable from
+   the model's own knowledge rather than requiring the document (the
+   opposite intent of `generate_questions`' two-hop rule). How many of each
+   difficulty is **chosen by the host on the upload form**
+   (`practice_count`, 1-5, defaulting to `PRACTICE_QUESTIONS_PER_DIFFICULTY`
+   in `config.py`) and flows through as `state['practice_questions_per_difficulty']`.
+   If the document already has its own exercises (from `existing_exercises`
+   above), the prompt requires genuinely new problems, not reworded copies.
+   Additive and best-effort: any failure here yields an empty list rather
+   than touching `state['error']`, since the main pipeline already produces
+   a usable question set without it.
+6. **generate_questions** (`nodes/generate.py`) — for each chunk, call the
+   LLM (`temperature=0.4`) with the chunk's local comprehension items *and*
+   any cross-chunk links touching it. The system prompt enforces a two-hop
+   rule (a question must combine two distinct facts — preferably a
+   cross-chunk link, otherwise two local items), forbids pure recall and
    passage-quoting phrasing, and requires the JSON schema to name the two
    hops (`hop_a`/`hop_b`) and what a one-hop reader would get wrong
    (`tests`) *before* the `question` field itself — field order matters
    because a model filling JSON top-to-bottom that writes `question` first
    will happily rationalize a hop after the fact instead of requiring one.
-6. **closed_book_check** (`nodes/critic.py`) — a *separate*, context-free
-   Groq call (`temperature=0.0`) tries to answer every draft using only
+7. **closed_book_check** (`nodes/critic.py`) — a *separate*, context-free
+   LLM call (`temperature=0.0`) tries to answer every draft using only
    general knowledge — it never sees the PDF or the comprehension record.
    Answer + confidence per question are recorded for the next stage.
-7. **quality_check** (`nodes/critic.py`) — another Groq call grades the
+8. **quality_check** (`nodes/critic.py`) — another LLM call grades the
    batch, rejecting on (in order): a closed-book leak — the context-free
    attempt matched the correct answer at medium/high confidence, meaning
    the question doesn't need the document at all — then structural issues
@@ -630,12 +649,21 @@ loop or save.
    then a decorative second hop, then ambiguity. Falls back to structural
    checks only if the critic call itself fails. Duplicates (by question
    text, case-insensitive) collapse.
-8. **_should_retry** (conditional edge) — if fewer than 5 questions
+9. **_should_retry** (conditional edge) — if fewer than 5 questions
    survived and we've retried less than twice, jump to `bump_retry` →
    `generate_questions` again (reusing the existing comprehension record).
    Otherwise proceed to `save`.
-9. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
-   in one transaction. Returns `question_set_id` to the caller.
+10. **save** (`nodes/save.py`) — write a new `QuestionSet` + `Question` rows
+    (document questions and practice questions together) in one
+    transaction. Returns `question_set_id` to the caller.
+
+Every LLM call above — not just `generate_questions` — goes through
+`invoke_json` (see **Model rotation & fallback** below), so a bad or
+truncated response from one model retries the same request on the next
+model in the chain instead of just failing that node's try/except and
+falling through to its own fallback (naive merge, structural-only grading,
+etc.). The per-node fallbacks still exist as the last resort if *every*
+model in the whole chain fails or returns unusable JSON.
 
 Cost/latency trade-off worth knowing: this pipeline makes roughly 2x the LLM
 calls of a plain "chunk → generate → grade" version (one comprehension call
@@ -647,9 +675,18 @@ for meaningfully harder, less-guessable questions.
 The pipeline takes 20-60 seconds — too long to hold an HTTP request open
 on Render's free tier (which caps requests at 30s). So:
 
+The upload form (`templates/ai/upload.html`) also lets the host pick how
+many EASY/MEDIUM/HARD practice questions to generate (1-5 each, default
+`PRACTICE_QUESTIONS_PER_DIFFICULTY` from `config.py`) via a `practice_count`
+field — `routes.py` clamps it to
+`[MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY, MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY]`
+before it ever reaches the pipeline, so a tampered or malformed form value
+can't blow up the LLM call.
+
 ```
 POST /ai/upload  ─► validate PDF (magic bytes, size, extension)
                  ─► save under a UUID filename in instance/uploads/
+                 ─► clamp practice_count to [MIN, MAX]
                  ─► jobs.create(owner_id=current_user.id) → job_id
                  ─► socketio.start_background_task(_worker)
                  ─► 302 to /ai/processing/<job_id>
@@ -657,6 +694,7 @@ POST /ai/upload  ─► validate PDF (magic bytes, size, extension)
 background _worker:
     with app.app_context():
         run_pipeline(pdf_path, owner_id,
+                     practice_questions_per_difficulty=practice_count,
                      progress_cb=lambda msg, pct: jobs.update(...))
         jobs.mark_done(job_id, question_set_id)
     then: delete the uploaded PDF from disk
@@ -688,27 +726,81 @@ Upload is behind the same layered defenses as the rest of the app, plus:
 
 ### LLM provider
 
-The pipeline runs on Groq:
-
-| Env var | Client | Model default |
-|---|---|---|
-| `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile` |
-
-Scanned-PDF OCR does not go through Groq — it runs on local Tesseract
-(`pytesseract`, see the `extract_text` node above), so it has no LLM
-provider, model, or rate limit of its own.
-
+The pipeline needs `GROQ_API_KEY` to run at all — `which_provider()` returns
+`None` and `run_pipeline` raises `RuntimeError` early if it isn't set, so the
+`_worker` surfaces a clean error via `jobs.mark_failed` instead of a 500.
 Groq's free tier needs no credit card (get a key at
-https://console.groq.com/keys). The model can be overridden via
-`GROQ_MODEL`. If the key isn't set,
-`run_pipeline` raises `RuntimeError` early — the `_worker` catches it and
-surfaces the message via `jobs.mark_failed`, so the user sees a clean error
-on the processing page instead of a 500.
+https://console.groq.com/keys).
 
-Check https://console.groq.com/docs/models before changing the model
-default — Groq's lineup turns over; a hardcoded model that gets deprecated
-fails the same way a dated Gemini model once did here (404, "no longer
-available").
+Beyond that single required key, `make_llm()` (`llm_utils.py`) builds a
+**3-tier fallback chain**, each tier optional beyond the first:
+
+| Tier | Env var | Client | Default models |
+|---|---|---|---|
+| 1. Groq (required) | `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile`, `qwen/qwen3.6-27b` |
+| 2. NVIDIA NIM (optional) | `NVIDIA_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `nvidia/llama-3.3-nemotron-super-49b-v1`, `meta/llama-3.1-8b-instruct` |
+| 3. OpenRouter (optional) | `OPENROUTER_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `openai/gpt-oss-20b:free`, `nvidia/nemotron-3-nano-30b-a3b:free`, `inclusionai/ling-3.0-flash:free` |
+
+A tier is skipped entirely if its API key isn't set — only `GROQ_API_KEY` is
+required. Every `*_MODEL_CHAIN` in `config.py` can be overridden via the
+matching env var (comma-separated) without a code change; a single Groq
+model can also be pinned with `GROQ_MODEL`.
+
+Check https://console.groq.com/docs/models (and the NVIDIA/OpenRouter
+catalogs) before changing a default — model lineups turn over, and a
+hardcoded model that gets deprecated fails the same way a dated Gemini
+model once did here (404, "no longer available").
+
+Scanned-PDF OCR does not go through any of these — it runs on local
+Tesseract (`pytesseract`, see the `extract_text` node above), so it has no
+LLM provider, model, or rate limit of its own.
+
+### Model rotation & fallback
+
+`_RotatingLLM` (`llm_utils.py`) is what every node's `llm = make_llm()`
+actually returns (unless it's the only tier configured, in which case it's
+just a plain `ChatGroq`). It walks the 3-tier chain above and rotates past
+an entry for two different reasons, handled two different ways:
+
+1. **The provider itself is unavailable** — rate limit / daily quota
+   exhausted, the model isn't enabled on this account, bad/missing API key,
+   timed out, or errored on its end. `_transient_errors()` lists the exact
+   exception types (`RateLimitError`, `PermissionDeniedError`,
+   `AuthenticationError`, `APIConnectionError` — which covers
+   `APITimeoutError`, its subclass — and `InternalServerError`, matched
+   across both `groq.*` and `openai.*` since NVIDIA/OpenRouter are
+   OpenAI-compatible). `invoke()` catches these, logs
+   `llm rotation: <provider>:<model> unavailable (...), trying next in
+   chain`, and moves on. Once it lands on a working entry, it **commits** —
+   `self._idx` moves forward permanently for the rest of this
+   `_RotatingLLM` instance's life, so a node processing many chunks doesn't
+   re-hit an exhausted model on every single chunk. (A fresh node still
+   starts a fresh `make_llm()` back at the front of the chain, since
+   per-minute limits may have reset by then.)
+2. **The provider responded, but the response is useless** — empty or
+   truncated JSON. This one is easy to miss: a reasoning model like
+   `qwen/qwen3.6-27b` writes a hidden `<think>...</think>` scratchpad before
+   its real answer, sharing the same `max_tokens` budget as the answer
+   itself. Under load it can spend the *entire* budget thinking and never
+   reach the answer — no exception is raised, `invoke()` alone can't see
+   anything wrong, but `parse_llm_json` correctly recognizes the unclosed
+   `<think>` tag and returns `[]` rather than guessing at the fragment. For
+   this reason **every node calls `invoke_json()` instead of
+   `invoke()`**: it parses the response internally, and if parsing comes
+   back empty, retries the *same request* on the next model in the chain
+   rather than accepting the empty result as this chunk's final answer. As
+   a targeted fix for the qwen case specifically, `_client_for` also passes
+   `reasoning_effort='none'` to any Groq model with `qwen` in its name,
+   which turns off the scratchpad entirely (verified live: same prompt went
+   from an empty response to clean JSON in under a second). Unlike a
+   transient API error, one bad parse doesn't mean the model is
+   exhausted — `invoke_json()` does **not** permanently advance `self._idx`
+   for that reason, so the next unrelated call still gives that model a
+   fresh try.
+
+Both paths log through the same `llm rotation: ...` prefix, so `grep
+"llm rotation"` on the server log shows the full story of what a run
+actually used.
 
 ---
 

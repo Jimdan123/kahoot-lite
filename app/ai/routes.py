@@ -23,6 +23,11 @@ from flask_login import current_user, login_required
 from app.ai import ai_bp
 from app.ai import jobs
 from app.ai.langgraph_flow import run_pipeline
+from app.ai.langgraph_flow.config import (
+    MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY,
+    MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
+    PRACTICE_QUESTIONS_PER_DIFFICULTY,
+)
 from app.extensions import limiter, socketio
 
 
@@ -40,6 +45,9 @@ def upload():
             'ai/upload.html',
             enabled=_which_provider() is not None,
             provider=_which_provider(),
+            practice_default=PRACTICE_QUESTIONS_PER_DIFFICULTY,
+            practice_min=MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
+            practice_max=MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY,
         )
 
     # --- POST: validate and start ---
@@ -77,6 +85,13 @@ def upload():
     quiz_name = (request.form.get('name') or '').strip()[:200]
     quiz_description = (request.form.get('description') or '').strip()[:500]
 
+    try:
+        practice_count = int(request.form.get('practice_count', PRACTICE_QUESTIONS_PER_DIFFICULTY))
+    except (TypeError, ValueError):
+        practice_count = PRACTICE_QUESTIONS_PER_DIFFICULTY
+    practice_count = max(MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
+                          min(MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY, practice_count))
+
     job = jobs.create(owner_id=current_user.id)
     app = current_app._get_current_object()
 
@@ -93,6 +108,7 @@ def upload():
                     owner_id=job.owner_id,
                     quiz_name=quiz_name,
                     quiz_description=quiz_description,
+                    practice_questions_per_difficulty=practice_count,
                     progress_cb=progress,
                 )
                 jobs.mark_done(job.job_id, qs_id)

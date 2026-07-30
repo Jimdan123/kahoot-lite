@@ -18,8 +18,7 @@ import json
 import logging
 from typing import List
 
-from app.ai.langgraph_flow.json_utils import parse_llm_json
-from app.ai.langgraph_flow.llm_utils import make_llm
+from app.ai.langgraph_flow.llm_utils import invoke_json, make_llm
 from app.ai.langgraph_flow.progress import emit
 from app.ai.langgraph_flow.state import PipelineState
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -106,11 +105,10 @@ def comprehend_chunks(state: PipelineState) -> dict:
         record = {'chunk_index': i, 'content_type': 'narrative', 'claims': [],
                    'definitions': [], 'mechanisms': [], 'quantities': []}
         try:
-            resp = llm.invoke([
+            resp, parsed = invoke_json(llm, [
                 SystemMessage(content=_COMPREHEND_SYSTEM),
                 HumanMessage(content=f'Passage:\n\n{chunk}'),
             ])
-            parsed = parse_llm_json(resp.content)
             if isinstance(parsed, dict):
                 record.update({k: parsed.get(k, []) for k in
                                ('claims', 'definitions', 'mechanisms', 'quantities')})
@@ -204,11 +202,10 @@ def merge_comprehension(state: PipelineState) -> dict:
 
     llm = make_llm(temperature=0.0)
     try:
-        resp = llm.invoke([
+        resp, merged = invoke_json(llm, [
             SystemMessage(content=_MERGE_SYSTEM),
             HumanMessage(content=json.dumps(records, ensure_ascii=False)),
         ])
-        merged = parse_llm_json(resp.content)
         if not isinstance(merged, dict) or not merged:
             raise ValueError('merge response was not a usable JSON object')
     except Exception as exc:

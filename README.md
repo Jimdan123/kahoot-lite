@@ -53,11 +53,14 @@ Tables are created automatically on first run via `db.create_all()`. `DATABASE_U
 - [x] Kahoot-style scoring (speed bonus)
 - [x] Live leaderboard
 
-## Part 1.2 (TODO)
+## Feature status (Part 1.2)
 
-- [ ] PDF upload endpoint
-- [ ] LangGraph pipeline: extract → chunk → generate → quality-check → dedupe → save
-- [ ] Host reviews and edits AI-generated questions before use
+- [x] PDF upload endpoint (`/ai/upload`), including scanned-PDF OCR via local Tesseract
+- [x] LangGraph pipeline: extract → chunk → comprehend → merge → practice → generate → closed-book-check → quality-check → save (`app/ai/langgraph_flow/`, see `HOW_IT_WORKS.md` §12 for the full node-by-node tour)
+- [x] 3-tier LLM fallback (Groq → NVIDIA → OpenRouter), with automatic retry-on-next-model for both API errors and unparseable responses
+- [x] Host picks how many practice questions per difficulty to generate (upload form)
+- [x] Host reviews AI-generated questions (question set detail page) and can add more or delete the whole set
+- [ ] Per-question edit/delete for an existing set (currently whole-set delete only)
 
 ## Project layout
 
@@ -70,7 +73,7 @@ app/
   auth/               signup, login, logout (host only)
   quiz/               question set CRUD
   game/               room creation, live game (HTTP + WebSocket)
-  ai/                 Part 1.2 stub — PDF → LangGraph pipeline
+  ai/                 Part 1.2 — PDF → LangGraph pipeline (question generation)
   templates/          Jinja2 templates, one folder per blueprint
   static/             CSS + JS
 config.py             Development / Production config classes
