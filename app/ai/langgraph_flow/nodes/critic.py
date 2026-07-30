@@ -1,11 +1,13 @@
 """Stage 6 & 7 — verify a question actually needs the source material.
 
 closed_book_check asks a SEPARATE, context-free LLM call to answer each
-draft using only general knowledge. quality_check then rejects any question
-that call answered correctly with real confidence (a "closed-book leak") —
-that's the single strongest signal a question tests trivia recall rather
-than comprehension of this specific document — plus the usual structural
-checks (multiple correct options, decorative second hop, ambiguity).
+draft using only general knowledge. quality_check used to hard-reject any
+question that call answered correctly with real confidence (a "closed-book
+leak"); it now KEEPS that question instead — the two-hop reasoning is often
+still genuine even when the specific answer happens to also be common
+knowledge — and tags it source='closed_book' so it's honestly labeled
+rather than silently discarded. The other rejection tests (structural
+issues, decorative second hop, ambiguity, etc.) are unchanged.
 """
 from __future__ import annotations
 
@@ -80,18 +82,14 @@ def closed_book_check(state: PipelineState) -> dict:
 _CRITIC_SYSTEM = """You are quality-filtering generated exam questions before
 they go live in a classroom quiz.
 
-Each item includes the question, its options and correct answer, the two
-hops it claims to combine, and the result of a SEPARATE attempt to answer
-the same question using only general knowledge (no access to the source
-document).
+Each item includes the question, its options and correct answer, and the two
+hops it claims to combine. Whether the question is ALSO answerable from
+general knowledge is judged separately, outside this pass, and is NOT one of
+your rejection tests — do not reject a question just because it seems like
+common knowledge; judge it purely on whether it genuinely requires combining
+hop_a and hop_b.
 
 Apply these rejection tests, in order. Reject on the first failure.
-
-  CLOSED-BOOK LEAK
-    The closed-book attempt chose the SAME letter as `correct`, at medium or
-    high confidence, with no access to the document. That means the
-    question is answerable from general knowledge alone — REJECT it no
-    matter how good hop_a/hop_b look on paper.
 
   STRUCTURAL
     More than one option looks correct, the correct option isn't among
@@ -126,10 +124,6 @@ Return a JSON array, same length and order as the input. Each element:
 {"verdict": "accept | reject", "reason": "<one short phrase>"}
 No prose, no code fences, no explanation after the array — the array is the
 entire response.
-
-Be strict about the closed-book leak test especially — it's the single best
-signal a question doesn't actually require this document. Expect to reject
-a meaningful fraction of what you're given.
 """
 
 
@@ -140,16 +134,19 @@ def quality_check(state: PipelineState) -> dict:
         return {'validated_questions': []}
 
     closed_book = state.get('closed_book_results') or [{} for _ in drafts]
-    items = []
-    for i, q in enumerate(drafts):
-        cb = closed_book[i] if i < len(closed_book) else {}
-        items.append({
-            'question': q.get('question', ''), 'A': q.get('A', ''), 'B': q.get('B', ''),
-            'C': q.get('C', ''), 'D': q.get('D', ''), 'correct': q.get('correct', ''),
-            'hop_a': q.get('hop_a', ''), 'hop_b': q.get('hop_b', ''), 'tests': q.get('tests', ''),
-            'closed_book_answer': cb.get('answer', 'unknown'),
-            'closed_book_confidence': cb.get('confidence', 'low'),
-        })
+    # Computed here, in Python, from closed_book_check's own results rather
+    # than asked of the critic LLM — deterministic, and keeps "does this
+    # leak" (a fact) separate from "is this well-formed" (the critic's
+    # actual job, see _CRITIC_SYSTEM).
+    leaked = [_is_closed_book_leak(closed_book[i] if i < len(closed_book) else {}, d)
+              for i, d in enumerate(drafts)]
+
+    items = [
+        {'question': q.get('question', ''), 'A': q.get('A', ''), 'B': q.get('B', ''),
+         'C': q.get('C', ''), 'D': q.get('D', ''), 'correct': q.get('correct', ''),
+         'hop_a': q.get('hop_a', ''), 'hop_b': q.get('hop_b', ''), 'tests': q.get('tests', '')}
+        for q in drafts
+    ]
 
     llm = make_llm(temperature=0.0)  # deterministic grading
     try:
@@ -159,24 +156,37 @@ def quality_check(state: PipelineState) -> dict:
         ])
         if not isinstance(verdicts, list) or len(verdicts) != len(drafts):
             raise ValueError('critic response malformed')
-        keep = [q for q, v in zip(drafts, verdicts)
+        keep = [(q, leaked[i]) for i, (q, v) in enumerate(zip(drafts, verdicts))
                 if isinstance(v, dict) and v.get('verdict') == 'accept']
     except Exception as exc:
         # If the grader fails, fall back to structural validity only rather
         # than dropping everything (or keeping obviously-broken drafts).
         log.warning(f'quality_check: critic call failed ({exc!r}), falling back to structural checks')
-        keep = [q for q in drafts if _structurally_valid(q)]
+        keep = [(q, leaked[i]) for i, q in enumerate(drafts) if _structurally_valid(q)]
 
     # Dedupe by exact question text (case-insensitive)
     seen: set = set()
     unique: List[dict] = []
-    for q in keep:
+    n_tagged = 0
+    for q, is_leak in keep:
         key = (q.get('question') or '').strip().lower()
         if key and key not in seen:
             seen.add(key)
+            if is_leak:
+                q['source'] = 'closed_book'
+                n_tagged += 1
             unique.append(q)
-    log.info(f'quality_check: {len(unique)}/{len(drafts)} questions passed')
+    log.info(f'quality_check: {len(unique)}/{len(drafts)} questions passed '
+             f'({n_tagged} tagged closed_book)')
     return {'validated_questions': unique}
+
+
+def _is_closed_book_leak(cb: dict, draft: dict) -> bool:
+    """True if the context-free attempt (see closed_book_check) matched this
+    draft's correct answer at medium/high confidence — i.e. answerable
+    without the document. No longer a rejection reason; kept questions get
+    tagged source='closed_book' instead of discarded (see quality_check)."""
+    return cb.get('confidence') in ('high', 'medium') and cb.get('answer') == draft.get('correct')
 
 
 def _structurally_valid(q: dict) -> bool:

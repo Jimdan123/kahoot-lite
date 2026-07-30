@@ -65,6 +65,12 @@ class Question(db.Model):
     correct_option = db.Column(db.String(1), nullable=False)
     time_limit = db.Column(db.Integer, default=20)
     difficulty = db.Column(db.String(10))  # 'easy' | 'medium' | 'hard'; null for manually-added questions
+    # 'closed_book' for a document-grounded question the pipeline kept despite
+    # it also being answerable without the PDF (see critic.py's quality_check —
+    # a closed-book leak used to be an automatic reject; now it's a label
+    # instead of a discard). Null for everything else, including practice
+    # questions, which are closed-book by design and don't need the tag.
+    source = db.Column(db.String(20))
 
     def options(self):
         return {

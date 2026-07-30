@@ -63,6 +63,18 @@ def create_app(config_name='default'):
         from app import models  # noqa: F401 — register models with SQLAlchemy
         db.create_all()
 
+        # create_all() only creates tables that don't exist yet — it never
+        # alters an existing one, so a column added to the model after the
+        # `questions` table already exists (e.g. on Render, which has real
+        # data) would silently never show up without this. Idempotent and
+        # cheap on every boot; add a new line here for the next such column
+        # rather than reaching for full Alembic migrations at this scale.
+        from sqlalchemy import text
+        db.session.execute(text(
+            'ALTER TABLE questions ADD COLUMN IF NOT EXISTS source VARCHAR(20)'
+        ))
+        db.session.commit()
+
         import sys
         print(f'[boot] DATABASE={db.engine.dialect.name}', file=sys.stderr, flush=True)
 

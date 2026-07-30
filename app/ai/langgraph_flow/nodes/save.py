@@ -40,6 +40,7 @@ def save(state: PipelineState) -> dict:
             correct_option=(q.get('correct') or 'A').upper()[:1],
             time_limit=_time_limit(q),
             difficulty=q.get('difficulty') if q.get('difficulty') in ('easy', 'medium', 'hard') else None,
+            source=q.get('source') if q.get('source') in ('closed_book',) else None,
         ))
     db.session.commit()
     emit(state, 'Done.', 1.0)

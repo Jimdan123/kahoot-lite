@@ -30,6 +30,7 @@
         <small class="text-muted">
             Time limit: {{ q.time_limit }}s
             {% if q.difficulty %}&middot; <span class="badge bg-secondary">{{ q.difficulty }}</span>{% endif %}
+            {% if q.source == 'closed_book' %}&middot; <span class="badge bg-info text-dark" title="Also answerable without the uploaded document">Closed Book</span>{% endif %}
         </small>
     </li>
     {% endfor %}
