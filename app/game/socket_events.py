@@ -14,6 +14,22 @@ from app.game.join_batcher import queue_player_joined
 ANSWER_GRACE_SECONDS = 1.0
 
 
+@socketio.on('sync_time')
+def on_sync_time(data):
+    """Stateless ping/pong for client-side clock-offset calibration — no
+    room/pin involved, works before joining anything. Echoes the client's
+    own send timestamp back alongside the server's current time so the
+    client can measure its own round-trip and estimate how far its clock
+    differs from the server's (see player_view.html/host_view.html's
+    calibrateClock()). This is what lets host and player countdowns agree
+    on the same real-world deadline regardless of how long any individual
+    socket message took to arrive."""
+    emit('sync_time_ack', {
+        'client_sent_at': data.get('client_sent_at'),
+        'server_time_ms': time.time() * 1000,
+    })
+
+
 @socketio.on('host_join')
 def on_host_join(data):
     room = game_service.get_room(data.get('pin'))

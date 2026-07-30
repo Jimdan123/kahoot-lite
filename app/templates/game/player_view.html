@@ -58,7 +58,28 @@ let currentTimeLimit = 20;
 // nickname in the public player_list broadcast do NOT get the token.
 const REJOIN_KEY = 'kahoot_rejoin_' + PIN + '_' + NICKNAME;
 
+// One-time clock-offset calibration against the server's clock (see
+// socket_events.py's sync_time), so this client's countdown agrees with
+// every other client's on the same real-world deadline, regardless of how
+// long any individual socket message happens to take to arrive. Assumes
+// symmetric latency (request/response take about the same time) — a fair
+// approximation for same-network play, good enough for ~200ms agreement,
+// not NTP-grade precision.
+let clockOffsetMs = 0;
+let clockCalibrated = false;
+
+function calibrateClock() {
+    socket.emit('sync_time', {client_sent_at: Date.now()});
+}
+
+socket.on('sync_time_ack', (data) => {
+    const rtt = Date.now() - data.client_sent_at;
+    clockOffsetMs = data.server_time_ms - (data.client_sent_at + rtt / 2);
+    clockCalibrated = true;
+});
+
 socket.on('connect', () => {
+    calibrateClock();
     const rejoin_token = localStorage.getItem(REJOIN_KEY) || undefined;
     socket.emit('player_join', {pin: PIN, nickname: NICKNAME, rejoin_token});
 });
@@ -98,7 +119,7 @@ socket.on('question_start', (q) => {
         opts.appendChild(btn);
     }
 
-    startTimer(q.time_left);
+    startTimer(q.time_left, q.deadline_ms);
     // If this is a rejoin after answering, freeze the buttons to reflect
     // the previous choice so the player can't submit again.
     if (q.resumed_answer) {
@@ -218,14 +239,23 @@ function spawnFloatPoints(wrapEl, text, cls) {
     span.addEventListener('animationend', () => span.remove());
 }
 
-function startTimer(secondsLeft) {
+function startTimer(secondsLeft, deadlineMs) {
     stopTimer();
-    // Deadline computed once, in this tab's own clock. Every tick re-derives
-    // "remaining" from (deadline - now) instead of decrementing a counter,
-    // so a tab that gets backgrounded/throttled (browsers slow or pause
-    // setInterval when hidden) shows the correct value the moment it's
-    // checked again, rather than a stale one that drifted while hidden.
-    const deadline = Date.now() + secondsLeft * 1000;
+    // Deadline computed once. Every tick re-derives "remaining" from
+    // (deadline - now) instead of decrementing a counter, so a tab that
+    // gets backgrounded/throttled (browsers slow or pause setInterval when
+    // hidden) shows the correct value the moment it's checked again,
+    // rather than a stale one that drifted while hidden.
+    //
+    // Prefer the server's absolute deadline, converted to this client's
+    // local clock via the calibrated offset, over "now + secondsLeft" —
+    // the latter bakes in however long THIS message took to arrive, so two
+    // clients with different delivery latency would otherwise disagree
+    // about when the countdown hits zero. Falls back to the old
+    // now-relative math if calibration hasn't completed yet.
+    const deadline = (clockCalibrated && deadlineMs != null)
+        ? deadlineMs - clockOffsetMs
+        : Date.now() + secondsLeft * 1000;
     const timerEl = document.getElementById('timer');
     const fillEl = document.getElementById('timer-fill');
     const render = () => {

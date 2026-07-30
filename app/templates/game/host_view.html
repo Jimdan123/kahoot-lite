@@ -50,7 +50,30 @@ const socket = io();
 let timerInterval = null;
 let currentTimeLimit = 20;
 
-socket.on('connect', () => socket.emit('host_join', {pin: PIN}));
+// One-time clock-offset calibration against the server's clock (see
+// socket_events.py's sync_time), so this client's countdown agrees with
+// every other client's on the same real-world deadline, regardless of how
+// long any individual socket message happens to take to arrive. Assumes
+// symmetric latency (request/response take about the same time) — a fair
+// approximation for same-network play, good enough for ~200ms agreement,
+// not NTP-grade precision.
+let clockOffsetMs = 0;
+let clockCalibrated = false;
+
+function calibrateClock() {
+    socket.emit('sync_time', {client_sent_at: Date.now()});
+}
+
+socket.on('sync_time_ack', (data) => {
+    const rtt = Date.now() - data.client_sent_at;
+    clockOffsetMs = data.server_time_ms - (data.client_sent_at + rtt / 2);
+    clockCalibrated = true;
+});
+
+socket.on('connect', () => {
+    calibrateClock();
+    socket.emit('host_join', {pin: PIN});
+});
 
 // Full snapshot: only sent once, when this host socket connects/reconnects
 // (see on_host_join server-side) — the resync point for whatever the room's
@@ -133,7 +156,7 @@ socket.on('question_start', (q) => {
         row.querySelector('span:last-child').textContent = val;
         opts.appendChild(row);
     }
-    startTimer(q.time_left);
+    startTimer(q.time_left, q.deadline_ms);
     document.getElementById('reveal-btn').disabled = false;
 });
 
@@ -199,9 +222,17 @@ function animateNumber(el, from, to, duration) {
     requestAnimationFrame(tick);
 }
 
-function startTimer(secondsLeft) {
+function startTimer(secondsLeft, deadlineMs) {
     stopTimer();
-    const deadline = Date.now() + secondsLeft * 1000;
+    // Prefer the server's absolute deadline, converted to this client's
+    // local clock via the calibrated offset, over "now + secondsLeft" —
+    // the latter bakes in however long THIS message took to arrive, so two
+    // clients with different delivery latency would otherwise disagree
+    // about when the countdown hits zero. Falls back to the old
+    // now-relative math if calibration hasn't completed yet.
+    const deadline = (clockCalibrated && deadlineMs != null)
+        ? deadlineMs - clockOffsetMs
+        : Date.now() + secondsLeft * 1000;
     const timerEl = document.getElementById('timer');
     const fillEl = document.getElementById('timer-fill');
     const render = () => {
