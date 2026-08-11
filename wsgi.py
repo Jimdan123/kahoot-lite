@@ -8,8 +8,10 @@ to the un-patched blocking versions. Symptom is the MonkeyPatchWarning
 you'll see in gunicorn logs, and long HTTPS calls (Groq API!) that
 freeze the WebSocket event loop.
 
-Local dev keeps using `python run.py`, which runs Werkzeug's dev server —
-no gevent involved, no monkey-patch needed.
+Local dev (`python run.py`) needs the identical patch for the identical
+reason — Flask-SocketIO auto-picks gevent as its async_mode whenever it's
+importable, and gevent is a hard dependency here (see requirements.txt),
+not an optional production-only extra.
 """
 from gevent import monkey
 monkey.patch_all()
