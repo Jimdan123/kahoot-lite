@@ -110,6 +110,11 @@ def upload():
                     practice_questions_per_difficulty=practice_count,
                     progress_cb=progress,
                 )
+                try:
+                    from evals.mlflow_logging import log_question_set
+                    log_question_set(qs_id)
+                except Exception as exc:
+                    current_app.logger.warning(f'eval metric logging failed: {exc!r}')
                 jobs.mark_done(job.job_id, qs_id)
             except Exception as exc:
                 jobs.mark_failed(job.job_id, str(exc))

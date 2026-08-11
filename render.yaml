@@ -30,7 +30,18 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
       # Optional — enrich_context node (thin/definitional or leaky-retry
       # documents), see app/ai/langgraph_flow/nodes/enrich.py.
       - key: TAVILY_API_KEY
         sync: false
+      # Optional — evals/'s MLflow run logging (see evals/README.md).
+      # Reuses the same Postgres instance as DATABASE_URL; MLflow's
+      # SQLAlchemy backend store creates its own tables there, no
+      # collision, no new Render service. No-ops entirely if unset — see
+      # evals/config.py::has_mlflow().
+      - key: MLFLOW_TRACKING_URI
+        fromDatabase:
+          name: kahoot-lite-db
+          property: connectionString

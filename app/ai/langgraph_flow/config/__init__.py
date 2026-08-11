@@ -33,12 +33,15 @@ from app.ai.langgraph_flow.config.generation import (
     QUESTIONS_PER_CHUNK,
 )
 from app.ai.langgraph_flow.config.providers import (
+    DEEPSEEK_API_BASE,
+    DEEPSEEK_MODEL_CHAIN,
     DEFAULT_GROQ_MODEL,
     GROQ_MODEL_CHAIN,
     NVIDIA_API_BASE,
     NVIDIA_MODEL_CHAIN,
     OPENROUTER_API_BASE,
     OPENROUTER_MODEL_CHAIN,
+    has_deepseek_fallback,
     has_nvidia_fallback,
     has_openrouter_fallback,
     which_provider,
@@ -51,6 +54,8 @@ from app.ai.langgraph_flow.config.topic_practice import (
 
 __all__ = [
     'CHUNK_WORDS',
+    'DEEPSEEK_API_BASE',
+    'DEEPSEEK_MODEL_CHAIN',
     'DEFAULT_GROQ_MODEL',
     'FALLBACK_TIME_LIMIT',
     'GROQ_MODEL_CHAIN',
@@ -79,6 +84,7 @@ __all__ = [
     'PRACTICE_QUESTIONS_PER_DIFFICULTY',
     'QUESTIONS_PER_CHUNK',
     'THIN_DOCUMENT_DEFINITION_RATIO',
+    'has_deepseek_fallback',
     'has_nvidia_fallback',
     'has_openrouter_fallback',
     'has_search_enrichment',

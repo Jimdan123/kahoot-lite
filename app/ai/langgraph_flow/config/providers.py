@@ -44,6 +44,21 @@ OPENROUTER_MODEL_CHAIN = [
 ]
 
 
+# DeepSeek — optional last-resort fallback tier, tried only once every
+# Groq AND NVIDIA AND OpenRouter model above is exhausted/blocked.
+# Entirely optional: if DEEPSEEK_API_KEY isn't set, the rotation chain
+# simply skips this tier. OpenAI-compatible endpoint, see llm_utils.py.
+# New accounts get a 5M-token free grant (~$8.40 value, no credit card,
+# valid 30 days as of 2026-08); after that, deepseek-v4-flash is
+# $0.14/$0.28 per 1M input/output tokens — see
+# https://api-docs.deepseek.com/quick_start/pricing (pricing/lineup
+# shifts over time, same caveat as the other tiers here). Free key at
+# https://platform.deepseek.com/api_keys — override via the
+# DEEPSEEK_MODEL_CHAIN env var (comma-separated).
+DEEPSEEK_API_BASE = 'https://api.deepseek.com'
+DEEPSEEK_MODEL_CHAIN = ['deepseek-v4-flash']
+
+
 def which_provider() -> Optional[str]:
     if os.environ.get('GROQ_API_KEY'):
         return 'groq'
@@ -56,3 +71,7 @@ def has_nvidia_fallback() -> bool:
 
 def has_openrouter_fallback() -> bool:
     return bool(os.environ.get('OPENROUTER_API_KEY'))
+
+
+def has_deepseek_fallback() -> bool:
+    return bool(os.environ.get('DEEPSEEK_API_KEY'))

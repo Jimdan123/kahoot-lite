@@ -790,13 +790,14 @@ Groq's free tier needs no credit card (get a key at
 https://console.groq.com/keys).
 
 Beyond that single required key, `make_llm()` (`llm_utils.py`) builds a
-**3-tier fallback chain**, each tier optional beyond the first:
+**4-tier fallback chain**, each tier optional beyond the first:
 
 | Tier | Env var | Client | Default models |
 |---|---|---|---|
 | 1. Groq (required) | `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile`, `qwen/qwen3.6-27b` |
 | 2. NVIDIA NIM (optional) | `NVIDIA_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `nvidia/llama-3.3-nemotron-super-49b-v1`, `meta/llama-3.1-8b-instruct` |
 | 3. OpenRouter (optional) | `OPENROUTER_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `openai/gpt-oss-20b:free`, `nvidia/nemotron-3-nano-30b-a3b:free`, `inclusionai/ling-3.0-flash:free` |
+| 4. DeepSeek (optional) | `DEEPSEEK_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `deepseek-v4-flash` |
 
 A tier is skipped entirely if its API key isn't set — only `GROQ_API_KEY` is
 required. Every `*_MODEL_CHAIN` in `config.py` can be overridden via the
@@ -816,7 +817,7 @@ LLM provider, model, or rate limit of its own.
 
 `_RotatingLLM` (`llm_utils.py`) is what every node's `llm = make_llm()`
 actually returns (unless it's the only tier configured, in which case it's
-just a plain `ChatGroq`). It walks the 3-tier chain above and rotates past
+just a plain `ChatGroq`). It walks the 4-tier chain above and rotates past
 an entry for two different reasons, handled two different ways:
 
 1. **The provider itself is unavailable** — rate limit / daily quota
@@ -884,6 +885,61 @@ an entry for two different reasons, handled two different ways:
 Both paths log through the same `llm rotation: ...` prefix, so `grep
 "llm rotation"` on the server log shows the full story of what a run
 actually used.
+
+### Checking correctness: `evals/`
+
+None of the above checks whether a generated question is actually
+*correct* — `critic.py`'s `quality_check` only verifies structural
+well-formedness and closed-book leakage, not content. That's what the
+top-level `evals/` package is for, and it's deliberately **not** part of
+this pipeline: it's a sibling package to `app/`, reads already-persisted
+`QuestionSet`/`Question` rows straight out of Postgres, and never imports
+`graph.py`, `state.py`, `llm_utils.py`, or anything under `nodes/`. The
+judge calls **OpenRouter** directly via the standard `openai` client
+(OpenRouter is OpenAI-compatible), with its own `OPENROUTER_JUDGE_API_KEY`.
+
+Provider history (see `evals/README.md` for the full story): originally
+Hugging Face (a provider fully unrelated to anything the pipeline used) —
+exhausted its $0.10/month free tier after ~7-12 judge calls in real use.
+Tried DeepSeek next, since this pipeline already has it as an optional
+4th fallback tier (§ Model rotation & fallback above) — but the tested
+account's advertised free grant was never actually issued (confirmed via
+DeepSeek's own `/user/balance` endpoint), blocking live use. Landed on
+OpenRouter, already proven working elsewhere in this exact codebase (the
+pipeline's own tier-3 fallback) with no balance issues for
+`":free"`-suffixed models. This does reuse the pipeline's own provider,
+narrowing the original "fully independent judge" design — mitigated by a
+separate key (`OPENROUTER_JUDGE_API_KEY`, not the pipeline's
+`OPENROUTER_API_KEY`) and a large model never used in the pipeline's own
+`OPENROUTER_MODEL_CHAIN` — never literally the same model grading its
+own output.
+
+The workflow, in order:
+
+1. **Human baseline** — a human hand-labels ~20 curated PDFs' worth of
+   real generated questions as correct/incorrect (`python -m
+   evals.human_review`), stored in `evals/human_labels.json`.
+2. **Calibration** — a DeepEval `GEval` metric (`FactualCorrectnessMetric`
+   in `evals/metrics.py`) judges the same questions using only its own
+   general knowledge (no document context), and `python -m
+   evals.calibrate_judge` reports its agreement with the human labels —
+   especially the false-positive rate (judge says correct, human said
+   incorrect), the dangerous case since that's exactly what would slip
+   past unsupervised.
+3. **Ongoing checks** — once calibration looks good, `python -m
+   evals.evaluate_question_set --question-set-id <id>` runs the same
+   metric against any real QuestionSet (including production, by pointing
+   `DATABASE_URL` at Render's DB), and `pytest
+   evals/test_question_correctness.py` turns that into a regression gate.
+
+Every judge verdict comes with its stated reasoning (which specific fact
+it relied on), not a bare score — see `evals/README.md` for the full
+setup and command reference. A single best-effort hook in
+`app/ai/routes.py` (right after `run_pipeline()` returns) logs cheap,
+non-LLM metrics (question count, closed-book-leak rate, difficulty mix)
+for every real quiz generation to MLflow, if `MLFLOW_TRACKING_URI` is
+set — it never invokes the LLM judge itself, which stays on-demand only
+since it's LLM-cost-heavy.
 
 ---
 

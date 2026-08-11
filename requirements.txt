@@ -24,5 +24,11 @@ pdfplumber>=0.11.0
 pytesseract>=0.3.10           # wraps the `tesseract` system binary — see README/Dockerfile
 tavily-python>=0.5.0          # optional enrich_context node — see nodes/enrich.py; needs TAVILY_API_KEY
 
+# evals/ — client-only, so app/ai/routes.py's best-effort metric-logging
+# hook can import it in production. The full `mlflow` package (server UI,
+# LLM judge, deepeval) is dev-only, see requirements-eval.txt. No-ops
+# entirely unless MLFLOW_TRACKING_URI is set — see evals/config.py.
+mlflow-skinny>=2.16.0
+
 # Dev tools
 ruff>=0.6.0

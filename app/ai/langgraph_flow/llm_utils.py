@@ -7,6 +7,8 @@ import re
 import time
 
 from app.ai.langgraph_flow.config import (
+    DEEPSEEK_API_BASE,
+    DEEPSEEK_MODEL_CHAIN,
     GROQ_MODEL_CHAIN,
     LLM_MAX_TOKENS,
     LLM_TIMEOUT_SECONDS,
@@ -15,6 +17,7 @@ from app.ai.langgraph_flow.config import (
     NVIDIA_MODEL_CHAIN,
     OPENROUTER_API_BASE,
     OPENROUTER_MODEL_CHAIN,
+    has_deepseek_fallback,
     has_nvidia_fallback,
     has_openrouter_fallback,
     which_provider,
@@ -31,10 +34,12 @@ log = logging.getLogger('kahoot.ai')
 _OPENAI_COMPATIBLE_PROVIDERS = {
     'nvidia': NVIDIA_API_BASE,
     'openrouter': OPENROUTER_API_BASE,
+    'deepseek': DEEPSEEK_API_BASE,
 }
 _PROVIDER_API_KEY_ENV = {
     'nvidia': 'NVIDIA_API_KEY',
     'openrouter': 'OPENROUTER_API_KEY',
+    'deepseek': 'DEEPSEEK_API_KEY',
 }
 
 
@@ -319,7 +324,8 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
     when a node genuinely needs a particular model. Without it, returns a
     client that transparently rotates through GROQ_MODEL_CHAIN, then — if
     NVIDIA_API_KEY is set — NVIDIA_MODEL_CHAIN, then — if
-    OPENROUTER_API_KEY is set — OPENROUTER_MODEL_CHAIN, trying each tier
+    OPENROUTER_API_KEY is set — OPENROUTER_MODEL_CHAIN, then — if
+    DEEPSEEK_API_KEY is set — DEEPSEEK_MODEL_CHAIN, trying each tier
     only once every model ahead of it in the chain is exhausted/blocked.
     Every *_MODEL_CHAIN can also be overridden via the matching env var
     (comma-separated), without a code change.
@@ -349,6 +355,9 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
     if has_openrouter_fallback():
         openrouter_models = _resolve_chain('OPENROUTER_MODEL_CHAIN', OPENROUTER_MODEL_CHAIN)
         chain += [('openrouter', m) for m in openrouter_models]
+    if has_deepseek_fallback():
+        deepseek_models = _resolve_chain('DEEPSEEK_MODEL_CHAIN', DEEPSEEK_MODEL_CHAIN)
+        chain += [('deepseek', m) for m in deepseek_models]
 
     return _RotatingLLM(chain, temperature, resolved_timeout)
 
