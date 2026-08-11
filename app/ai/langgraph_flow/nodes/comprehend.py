@@ -78,6 +78,13 @@ Every item must include `span`: the shortest verbatim quote (max 20 words)
 from the passage that supports it. If you cannot produce a span, drop the
 item — do not include unsupported items.
 
+JSON SAFETY: your entire response must be valid JSON. If a span or any
+other field would contain mathematical notation (LaTeX like \\ldots,
+\\theta, matrix/vector syntax, or symbols like Θ, σ, √), do NOT copy the
+raw notation verbatim — rewrite it in plain words/ASCII instead (e.g.
+"sqrt(A transpose A)" not "\\sqrt{A^TA}", "theta" not "\\theta"). A literal
+backslash almost always breaks JSON string escaping — never include one.
+
 Return JSON:
 {
   "content_type": "narrative | reference | unanswerable_exercise | mixed",

@@ -46,14 +46,24 @@ from the record (or one item from the record plus a LINK), not just one.
 Valid pairings, in order of preference:
   1. A LINK, if one is given below — that's a fact in this passage plus a
      fact from elsewhere in the document; use both.
-  2. A mechanism and the quantity/condition that constrains it.
-  3. A claim and the assumption or definition it depends on.
-  4. Two claims that reinforce or sit in tension with each other.
-  5. A document DEFINITION plus a WHY/REASON fact from EXTERNAL CONTEXT, if
+  2. APPLICATION — a MECHANISM that is a procedure, formula, or method (not
+     just a narrative cause-and-effect chain), applied by YOU to a new,
+     concrete scenario with numbers or specifics you invent — never stated
+     in the passage. Prefer this pairing whenever the record contains a
+     procedure/formula/method that could actually be executed on new
+     inputs (a calculation, a decision rule, a classification test): it
+     tests whether the student can USE what they read, not just recognize
+     it restated. Work the invented scenario through to the answer
+     yourself, step by step, before writing `correct` — a wrong worked
+     answer is worse than skipping this pairing.
+  3. A mechanism and the quantity/condition that constrains it.
+  4. A claim and the assumption or definition it depends on.
+  5. Two claims that reinforce or sit in tension with each other.
+  6. A document DEFINITION plus a WHY/REASON fact from EXTERNAL CONTEXT, if
      given below — the definition supplies WHAT the term means; the
      EXTERNAL CONTEXT fact supplies WHY it matters or how it's actually
      used. Use this pairing only when EXTERNAL CONTEXT is present below AND
-     none of pairings 1-4 apply to this passage.
+     none of pairings 1-5 apply to this passage.
 
 MIX YOUR REFERENCE TYPES — do not pair two DEFINITIONS together, and write
 at most one question per batch whose two hops are both DEFINITIONS. A
@@ -62,7 +72,7 @@ to use in context — e.g. "term X means Y" plus "the passage describes a
 situation where Y applies" — not two glossary entries stitched together. If
 the record is genuinely all definitions with nothing else to pair them with,
 write fewer questions rather than padding with definition-only pairs (unless
-pairing 5 above applies).
+pairing 6 above applies).
 
 HARD RULE — EXTERNAL CONTEXT IS NEVER BOTH HOPS: EXTERNAL CONTEXT exists
 ONLY to supply a WHY/REASON for a term the document itself defines. At most
@@ -75,7 +85,7 @@ no real dependence on the document-side hop, tests general knowledge, not
 whether the student read this document, and defeats the entire point of a
 quiz generated from their upload. If you cannot find one genuine
 document-grounded hop to pair a WHY fact with, do not use EXTERNAL CONTEXT
-for that question at all — fall back to pairings 1-4, or write fewer
+for that question at all — fall back to pairings 1-5, or write fewer
 questions.
 
 FORBIDDEN — do not write:
@@ -112,12 +122,26 @@ PROCEDURE — for each question, fill fields IN ORDER. Identify hop_a and hop_b
 FIRST. Then write `tests`: the one specific misunderstanding a student falls
 into if they only have one of the two hops. Only THEN write the question,
 then rate difficulty and time_limit last (you can't judge either until the
-question exists).
+question exists). For an APPLICATION pairing specifically: work the invented
+scenario through to a numeric/concrete answer yourself BEFORE writing the
+question or options — the `correct` option must match your own worked
+answer exactly, and the wrong options should be answers a student would get
+from one specific, identifiable slip (wrong formula variable, off-by-one
+step, wrong unit), not arbitrary numbers.
+
+JSON SAFETY: your entire response must be valid JSON. If a question, option,
+or any field would involve mathematical notation (LaTeX like \\ldots, \\theta,
+matrix/vector syntax, or symbols like Θ, σ, √), do NOT write the raw
+notation — rewrite it in plain words/ASCII instead (e.g. "the square root
+of A transpose A" not "\\sqrt{{A^TA}}", "lambda" not "\\lambda"). A literal
+backslash almost always breaks JSON string escaping — never include one.
 
 Return a single JSON array. No prose, no code fences. Each element:
 {{
   "hop_a": "<the first fact used, and where it's from — a DEFINITION/CLAIM/
-            MECHANISM/QUANTITY/LINK in the document, or EXTERNAL CONTEXT>",
+            MECHANISM/QUANTITY/LINK in the document, an APPLICATION (a
+            document procedure/formula applied to numbers you invented and
+            solved yourself), or EXTERNAL CONTEXT>",
   "hop_b": "<the second fact used, and where it's from — same options as
             hop_a; at least one of hop_a/hop_b must be document-side>",
   "tests": "<what a student who only knew hop_a would get wrong>",

@@ -75,6 +75,13 @@ Rules:
     60-90s+. Do not default to a round number out of habit — base it on the
     real number of steps/arithmetic involved.
 
+JSON SAFETY: your entire response must be valid JSON. If a question or
+option would involve mathematical notation (LaTeX like \\ldots, \\theta,
+matrix/vector syntax, or symbols like Θ, σ, √), do NOT write the raw
+notation — rewrite it in plain words/ASCII instead (e.g. "the square root
+of A transpose A" not "\\sqrt{{A^TA}}", "lambda" not "\\lambda"). A literal
+backslash almost always breaks JSON string escaping — never include one.
+
 Return a single JSON array. No prose, no code fences. Each element:
 {{
   "difficulty": "easy | medium | hard",

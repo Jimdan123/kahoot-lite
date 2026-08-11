@@ -14,6 +14,11 @@ _JSON_FENCE_RE = re.compile(r'```(?:json)?\s*(.*?)```', re.DOTALL)
 # bracket search below can grab a fragment from the draft instead of the
 # actual final answer.
 _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL)
+# Matches a backslash NOT followed by a valid JSON escape character — used to
+# repair a model writing raw LaTeX (\ldots, \theta, ...) inside a JSON string
+# instead of escaping or avoiding it. See _repair_invalid_escape below.
+_INVALID_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x1f]')
 
 
 def content_to_text(raw) -> str:
@@ -75,6 +80,30 @@ def parse_llm_json(raw):
             # the next model over a chatty model, not a broken one.
             try:
                 return json.loads(text[:exc.pos])
+            except json.JSONDecodeError:
+                pass
+        elif exc.msg == 'Invalid \\escape':
+            # The model wrote raw LaTeX/backslash notation into a JSON
+            # string (e.g. "\ldots", "\theta") instead of escaping or
+            # avoiding it, despite the JSON-safety prompt instructions —
+            # double every backslash that isn't already a valid JSON
+            # escape start and retry, rather than discarding the whole
+            # response over one bad character.
+            try:
+                repaired = json.loads(_INVALID_ESCAPE_RE.sub(r'\\\\', text))
+                log.warning(f'parse_llm_json: repaired invalid escape sequence(s), recovered {len(text)} chars')
+                return repaired
+            except json.JSONDecodeError:
+                pass
+        elif exc.msg == 'Invalid control character at':
+            # A literal control character (e.g. a PDF/OCR font-encoding
+            # artifact that made it through extraction) landed inside a
+            # JSON string, where it's always invalid unescaped — strip it
+            # and retry rather than discarding the whole response.
+            try:
+                repaired = json.loads(_CONTROL_CHAR_RE.sub('', text))
+                log.warning(f'parse_llm_json: repaired invalid control character(s), recovered {len(text)} chars')
+                return repaired
             except json.JSONDecodeError:
                 pass
         # The two remaining real causes look identical from the caller's side
