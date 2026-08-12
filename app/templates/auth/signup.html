@@ -9,22 +9,13 @@
                 <form method="POST">
                     {{ form.hidden_tag() }}
                     <div class="mb-3">
-                        {{ form.email.label(class='form-label') }}
-                        {{ form.email(class='form-control') }}
-                        {% for e in form.email.errors %}<small class="text-danger">{{ e }}</small>{% endfor %}
-                    </div>
-                    <div class="mb-3">
-                        {{ form.display_name.label(class='form-label') }}
-                        {{ form.display_name(class='form-control') }}
+                        {{ form.username.label(class='form-label') }}
+                        {{ form.username(class='form-control') }}
+                        {% for e in form.username.errors %}<small class="text-danger">{{ e }}</small>{% endfor %}
                     </div>
                     <div class="mb-3">
                         {{ form.password.label(class='form-label') }}
                         {{ form.password(class='form-control') }}
-                    </div>
-                    <div class="mb-3">
-                        {{ form.password_confirm.label(class='form-label') }}
-                        {{ form.password_confirm(class='form-control') }}
-                        {% for e in form.password_confirm.errors %}<small class="text-danger">{{ e }}</small>{% endfor %}
                     </div>
                     {{ form.submit(class='btn btn-success w-100') }}
                 </form>
