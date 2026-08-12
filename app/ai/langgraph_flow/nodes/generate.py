@@ -254,10 +254,23 @@ def generate_questions(state: PipelineState) -> dict:
                     f'({len(content_to_text(resp.content))} chars received, '
                     f'see the parse_llm_json warning above for exactly where it broke)'
                 )
-            for q in parsed:
+            # The model is asked for a JSON array of question objects, but a
+            # malformed response can still parse as valid JSON while
+            # containing non-object items (e.g. a stray string) — found
+            # live 2026-08-12: one such chunk crashed the whole chunk's
+            # results with "'str' object does not support item assignment"
+            # on q['_chunk_index'] = i, discarding every OTHER valid
+            # question from that same response too. Filter instead of
+            # trusting every element's shape.
+            valid_items = [q for q in parsed if isinstance(q, dict)]
+            n_dropped = len(parsed) - len(valid_items)
+            if n_dropped:
+                log.warning(f'chunk {i + 1}/{n_chunks}: dropped {n_dropped} non-object '
+                            f'item(s) from the parsed response (expected question objects)')
+            for q in valid_items:
                 q['_chunk_index'] = i
                 _normalize_difficulty_and_time(q)
-            drafts.extend(parsed)
+            drafts.extend(valid_items)
         except Exception as exc:
             # One bad chunk doesn't kill the run, but keep the FIRST error
             # so we can surface something useful if EVERY chunk fails.

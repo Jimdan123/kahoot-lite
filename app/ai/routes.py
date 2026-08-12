@@ -50,7 +50,6 @@ def upload():
         return render_template(
             'ai/upload.html',
             enabled=(server_has_key or user_has_keys),
-            server_has_key=server_has_key,
             user_has_keys=user_has_keys,
             practice_default=PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_min=MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,

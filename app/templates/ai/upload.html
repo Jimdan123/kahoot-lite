@@ -17,7 +17,7 @@
             or — if you run this server — see <code>.env.example</code> for setup.
         </div>
         {% elif user_has_keys %}
-        <p class="text-muted small">Your saved API key(s) are tried first{% if server_has_key %}, with a server-wide fallback{% endif %}.</p>
+        <p class="text-muted small">Your saved API key(s) are used for generation.</p>
         {% else %}
         <p class="text-muted small">AI generation is available.</p>
         {% endif %}

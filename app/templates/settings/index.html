@@ -7,9 +7,7 @@
             <div class="card-body">
                 <h3>Your API Keys</h3>
                 <p class="text-muted">
-                    Add your own provider key so your quiz generation uses your own quota
-                    instead of the shared server key. Your saved key(s) are tried first,
-                    then the server's own key as a fallback.
+                    Add your own provider key so your quiz generation uses your own quota.
                 </p>
                 <form method="POST">
                     {{ form.hidden_tag() }}
@@ -24,7 +22,7 @@
                     </div>
                     <div class="mb-3">
                         {{ form.api_key.label(class='form-label') }}
-                        {{ form.api_key(class='form-control') }}
+                        {{ form.api_key(class='form-control', autocomplete='new-password') }}
                     </div>
                     {{ form.submit(class='btn btn-primary') }}
                 </form>
@@ -90,7 +88,7 @@
                     </div>
                     <div class="mb-3">
                         {{ custom_form.api_key.label(class='form-label') }}
-                        {{ custom_form.api_key(class='form-control') }}
+                        {{ custom_form.api_key(class='form-control', autocomplete='new-password') }}
                     </div>
                     {{ custom_form.submit(class='btn btn-primary') }}
                 </form>

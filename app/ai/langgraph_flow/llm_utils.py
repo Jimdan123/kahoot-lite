@@ -152,11 +152,17 @@ def _transient_errors():
     """Exception types that mean 'this model/provider, not our request' —
     safe to silently retry on the next chain entry. Rate limit / daily quota
     exhausted, the org's console doesn't have the model enabled, the API key
-    is missing/invalid, the provider timed out, couldn't be reached, or
-    errored on its end (5xx). Deliberately excludes BadRequestError (400) —
-    that usually means OUR request is malformed, which every other model
-    would reject the same way, so rotating past it would just hide a real
-    bug behind a wall of identical failures.
+    is missing/invalid, the model slug was renamed/deprecated (404 — a
+    provider-side lineup change, same "not our request" category as the
+    others; confirmed live 2026-08-12: OpenRouter's free
+    inclusionai/ling-3.0-flash:free now 404s with 'use this slug instead' —
+    without this, that single dead entry aborted the WHOLE rotation instead
+    of trying the next chain entry, defeating the point of having a chain),
+    the provider timed out, couldn't be reached, or errored on its end
+    (5xx). Deliberately excludes BadRequestError (400) — that usually means
+    OUR request is malformed, which every other model would reject the same
+    way, so rotating past it would just hide a real bug behind a wall of
+    identical failures.
 
     groq.* and openai.* mirror each other 1:1 (NVIDIA and OpenRouter are
     both OpenAI-compatible endpoints, see _OPENAI_COMPATIBLE_PROVIDERS).
@@ -167,9 +173,9 @@ def _transient_errors():
     import openai
     return (
         groq.RateLimitError, groq.PermissionDeniedError, groq.AuthenticationError,
-        groq.APIConnectionError, groq.InternalServerError,
+        groq.APIConnectionError, groq.InternalServerError, groq.NotFoundError,
         openai.RateLimitError, openai.PermissionDeniedError, openai.AuthenticationError,
-        openai.APIConnectionError, openai.InternalServerError,
+        openai.APIConnectionError, openai.InternalServerError, openai.NotFoundError,
     )
 
 
