@@ -20,4 +20,18 @@ COPY . .
 # ordering constraint lives inside wsgi.py itself, so this just needs to
 # invoke the same gunicorn command as Procfile/render.yaml. sh -c is
 # required for $PORT to expand (exec-form CMD does no shell substitution).
-CMD ["sh", "-c", "gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT wsgi:app"]
+#
+# --timeout 1800 (30 min, gunicorn's default is 30s): the AI pipeline's
+# extract_text() node has no page cap — a large PDF (~100 pages) does many
+# sequential CPU-bound page-to-image renders plus one vision API call per
+# detected figure/formula/diagram, all inside a single background greenlet.
+# gevent's cooperative scheduling only yields on I/O, so sustained CPU work
+# there can starve the event loop long enough to miss gunicorn's own
+# heartbeat to its arbiter — which kills and restarts the worker, wiping
+# the in-memory job registry (app/ai/jobs.py) and leaving the processing
+# page polling a job that no longer exists. This raises the ceiling so a
+# legitimately slow large-document run has room to actually finish instead
+# of getting killed mid-job. Not a fix for unbounded processing time itself
+# (no page cap was added — see extract_text's module docstring) — a
+# sufficiently huge/figure-heavy PDF could still exceed even this.
+CMD ["sh", "-c", "gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --timeout 1800 --bind 0.0.0.0:$PORT wsgi:app"]

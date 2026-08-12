@@ -507,13 +507,20 @@ isn't hardened for public traffic.
 ```
 Render runs:
     gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker \
-             -w 1 --bind 0.0.0.0:$PORT run:app
+             -w 1 --timeout 1800 --bind 0.0.0.0:$PORT run:app
 ```
 
 - `gunicorn` is a production WSGI server
 - The `GeventWebSocketWorker` upgrades HTTP requests to WebSocket cleanly
 - `-w 1` (one worker) — required because our room state lives in a per-process
   dict; multi-worker would need Redis for shared state
+- `--timeout 1800` (gunicorn's default is 30s) — the AI pipeline's
+  `extract_text` node has no page cap, so a large PDF (~100 pages) can spend
+  several minutes on sequential CPU-bound page rendering + vision-model
+  calls inside one background greenlet; gevent only yields on I/O, so
+  sustained CPU work there can miss gunicorn's own heartbeat and get the
+  worker killed mid-job otherwise — which wipes the in-memory job registry
+  (`app/ai/jobs.py`) a restarted worker can't recover
 - `run:app` imports `run.py` and exposes the `app` object (the `if __name__
   == '__main__'` block never runs under gunicorn)
 
