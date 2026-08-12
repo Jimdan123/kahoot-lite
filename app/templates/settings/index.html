@@ -13,6 +13,11 @@
                 </p>
                 <form method="POST">
                     {{ form.hidden_tag() }}
+                    {% for field in form if field.errors %}
+                        {% for error in field.errors %}
+                            <div class="alert alert-danger py-2">{{ field.label.text }}: {{ error }}</div>
+                        {% endfor %}
+                    {% endfor %}
                     <div class="mb-3">
                         {{ form.provider.label(class='form-label') }}
                         {{ form.provider(class='form-select') }}
@@ -27,9 +32,9 @@
         </div>
 
         {% if saved_keys %}
-        <div class="card">
+        <div class="card mb-4">
             <div class="card-body">
-                <h5>Saved Keys</h5>
+                <h5>Known Provider Keys</h5>
                 <table class="table align-middle mb-0">
                     <thead>
                         <tr>
@@ -45,6 +50,76 @@
                             <td class="text-muted">{{ key.updated_at.strftime('%Y-%m-%d') if key.updated_at else '' }}</td>
                             <td class="text-end">
                                 <form method="POST" action="{{ url_for('settings.delete_key', provider=key.provider) }}" class="d-inline" onsubmit="return confirm('Remove your ' + '{{ provider_labels.get(key.provider, key.provider) }}' + ' key?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="card mb-4">
+            <div class="card-body">
+                <h3>Add a Custom Provider</h3>
+                <p class="text-muted">
+                    Not one of the 4 above? Point at any OpenAI-compatible endpoint —
+                    give it a name, its base URL, which model(s) to use, and your key.
+                </p>
+                <form method="POST" action="{{ url_for('settings.add_custom_provider') }}">
+                    {{ custom_form.hidden_tag() }}
+                    {% for field in custom_form if field.errors %}
+                        {% for error in field.errors %}
+                            <div class="alert alert-danger py-2">{{ field.label.text }}: {{ error }}</div>
+                        {% endfor %}
+                    {% endfor %}
+                    <div class="mb-3">
+                        {{ custom_form.label.label(class='form-label') }}
+                        {{ custom_form.label(class='form-control', placeholder='e.g. My OpenAI Key') }}
+                    </div>
+                    <div class="mb-3">
+                        {{ custom_form.base_url.label(class='form-label') }}
+                        {{ custom_form.base_url(class='form-control', placeholder='https://api.openai.com/v1') }}
+                    </div>
+                    <div class="mb-3">
+                        {{ custom_form.model_name.label(class='form-label') }}
+                        {{ custom_form.model_name(class='form-control', placeholder='gpt-4o-mini, gpt-4o') }}
+                    </div>
+                    <div class="mb-3">
+                        {{ custom_form.api_key.label(class='form-label') }}
+                        {{ custom_form.api_key(class='form-control') }}
+                    </div>
+                    {{ custom_form.submit(class='btn btn-primary') }}
+                </form>
+            </div>
+        </div>
+
+        {% if custom_keys %}
+        <div class="card">
+            <div class="card-body">
+                <h5>Custom Providers</h5>
+                <table class="table align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Label</th>
+                            <th>Base URL</th>
+                            <th>Model(s)</th>
+                            <th>Last updated</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for key in custom_keys %}
+                        <tr>
+                            <td>{{ key.provider }}</td>
+                            <td class="text-muted text-truncate" style="max-width: 200px;">{{ key.base_url }}</td>
+                            <td class="text-muted">{{ key.model_name }}</td>
+                            <td class="text-muted">{{ key.updated_at.strftime('%Y-%m-%d') if key.updated_at else '' }}</td>
+                            <td class="text-end">
+                                <form method="POST" action="{{ url_for('settings.delete_key', provider=key.provider) }}" class="d-inline" onsubmit="return confirm('Remove your &quot;' + '{{ key.provider }}' + '&quot; custom provider?');">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
                                 </form>

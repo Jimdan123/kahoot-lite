@@ -103,7 +103,7 @@ def comprehend_chunks(state: PipelineState) -> dict:
     chunks = state['chunks']
     n_chunks = len(chunks)
     emit(state, f'Reading for comprehension (0/{n_chunks})…', 0.25)
-    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))  # extraction should be deterministic, not creative
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))  # extraction should be deterministic, not creative
 
     records: List[dict] = []
     for i, chunk in enumerate(chunks):
@@ -207,7 +207,7 @@ def merge_comprehension(state: PipelineState) -> dict:
     if not records:
         return {'comprehension': _empty_comprehension()}
 
-    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))
     try:
         resp, merged = invoke_json(llm, [
             SystemMessage(content=_MERGE_SYSTEM),

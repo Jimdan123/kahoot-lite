@@ -16,6 +16,12 @@ class PipelineState(TypedDict, total=False):
                                           # resolved ONCE in run_pipeline() — see graph.py and
                                           # llm_utils.make_llm(user_keys=...). Nodes must never
                                           # query UserApiKey/decrypt directly, just read this.
+    custom_llm_providers: List[dict]     # [{'label', 'base_url', 'models': [...], 'api_key'}, ...] —
+                                          # the run's owner's own arbitrary OpenAI-compatible
+                                          # providers (not one of the 4 known ones), resolved ONCE
+                                          # in run_pipeline() — see graph.py's
+                                          # _resolve_custom_providers and
+                                          # llm_utils.make_llm(custom_providers=...).
     token_usage: Dict[str, int]          # {'prompt_tokens', 'completion_tokens', 'total_tokens'},
                                           # initialized once in run_pipeline() and mutated in
                                           # place by llm_utils.invoke_json() on every call — see

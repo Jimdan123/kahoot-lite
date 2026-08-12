@@ -83,6 +83,24 @@ def create_app(config_name='default'):
         db.session.execute(text(
             'ALTER TABLE question_sets ADD COLUMN IF NOT EXISTS total_tokens INTEGER'
         ))
+        # Custom BYOK providers (arbitrary OpenAI-compatible endpoints, not
+        # just the 4 hardcoded ones) need a longer `provider` (it holds the
+        # user's own label, not just a short fixed code) plus 3 new columns.
+        # ALTER COLUMN ... TYPE is idempotent here too — Postgres no-ops if
+        # the column is already VARCHAR(50), same safe-to-rerun-every-boot
+        # property as the ADD COLUMN IF NOT EXISTS lines around it.
+        db.session.execute(text(
+            'ALTER TABLE user_api_keys ALTER COLUMN provider TYPE VARCHAR(50)'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS is_custom BOOLEAN NOT NULL DEFAULT FALSE'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS base_url VARCHAR(500)'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS model_name TEXT'
+        ))
         db.session.commit()
 
         import sys

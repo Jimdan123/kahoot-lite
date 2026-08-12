@@ -53,7 +53,7 @@ def closed_book_check(state: PipelineState) -> dict:
          'A': q.get('A', ''), 'B': q.get('B', ''), 'C': q.get('C', ''), 'D': q.get('D', '')}
         for i, q in enumerate(drafts)
     ]
-    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))
     try:
         resp, results = invoke_json(llm, [
             SystemMessage(content=_CLOSED_BOOK_SYSTEM),
@@ -154,7 +154,7 @@ def quality_check(state: PipelineState) -> dict:
         for q in drafts
     ]
 
-    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))  # deterministic grading
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))  # deterministic grading
     try:
         resp, verdicts = invoke_json(llm, [
             SystemMessage(content=_CRITIC_SYSTEM),

@@ -146,7 +146,7 @@ def enrich_context(state: PipelineState) -> dict:
         return {'search_context': []}
 
     try:
-        llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))  # distillation should be deterministic, not creative
+        llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))  # distillation should be deterministic, not creative
         resp, parsed = invoke_json(llm, [
             SystemMessage(content=_DISTILL_SYSTEM),
             HumanMessage(content=f'Topic: {topic}\n\nSnippets:\n' +

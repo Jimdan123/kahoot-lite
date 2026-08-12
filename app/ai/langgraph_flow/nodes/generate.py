@@ -216,7 +216,7 @@ def generate_questions(state: PipelineState) -> dict:
     quotas = _allocate_quotas(n_chunks, comprehension)
     emit(state, f'Connecting to Groq (0/{n_chunks})…', 0.45)
     try:
-        llm = make_llm(user_keys=state.get('user_llm_keys'))
+        llm = make_llm(user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))
     except Exception as exc:
         # Fatal: can't make the client at all (bad model name, missing/invalid key).
         log.error(f'ChatGroq init failed: {exc!r}')

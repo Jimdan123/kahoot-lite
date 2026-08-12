@@ -117,7 +117,7 @@ def generate_practice_questions(state: PipelineState) -> dict:
     ) if existing else ''
 
     try:
-        llm = make_llm(temperature=0.4, user_keys=state.get('user_llm_keys'))
+        llm = make_llm(temperature=0.4, user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))
         resp, parsed = invoke_json(llm, [
             SystemMessage(content=_PRACTICE_SYSTEM.format(
                 topic=topic, existing_block=existing_block, n=n, total=total)),

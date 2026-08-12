@@ -124,6 +124,30 @@ _PROVIDER_BUILDERS = {
 }
 
 
+def _build_custom_client(base_url: str):
+    """Returns a (model, temperature, timeout, api_key) -> ChatOpenAI
+    builder for a user-defined custom BYOK provider (any OpenAI-compatible
+    endpoint, not one of the 4 hardcoded ones — see make_llm()'s
+    custom_providers param). Deliberately NOT built on
+    _build_openai_compatible: that closure's fallback branch
+    (`api_key or os.environ.get(api_key_env)`) needs a real env-var name a
+    custom entry has no equivalent for, and silently falling back to some
+    unrelated server-side key for a user's own arbitrary endpoint would be
+    exactly the kind of landmine ChatGroq's default_factory taught us to
+    avoid — api_key is always a real string here, never optional."""
+    def build(model: str, temperature: float, timeout: float, api_key: str = None):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+            max_tokens=LLM_MAX_TOKENS,
+            timeout=timeout,
+        )
+    return build
+
+
 def _transient_errors():
     """Exception types that mean 'this model/provider, not our request' —
     safe to silently retry on the next chain entry. Rate limit / daily quota
@@ -149,16 +173,17 @@ def _transient_errors():
     )
 
 
-# Process-wide, not per-_RotatingLLM: (provider, model, key_fingerprint) ->
-# unix timestamp it becomes worth retrying. A daily-quota RateLimitError
-# doesn't clear for hours, but make_llm() builds a FRESH _RotatingLLM
-# (starting back at chain index 0) for every pipeline node — without this
-# cache, every single node call would re-waste a round trip on a model
-# already known dead for the rest of the day before falling through to
-# whatever tier actually works, which dominates the logs and adds latency
-# to every node for no benefit. Per-minute limits still self-heal normally:
-# the cached expiry is the provider's own reported wait time, so once it
-# elapses the model is tried again like nothing happened.
+# Process-wide, not per-_RotatingLLM: (provider, model, key_fingerprint,
+# base_url) -> unix timestamp it becomes worth retrying. A daily-quota
+# RateLimitError doesn't clear for hours, but make_llm() builds a FRESH
+# _RotatingLLM (starting back at chain index 0) for every pipeline node —
+# without this cache, every single node call would re-waste a round trip
+# on a model already known dead for the rest of the day before falling
+# through to whatever tier actually works, which dominates the logs and
+# adds latency to every node for no benefit. Per-minute limits still
+# self-heal normally: the cached expiry is the provider's own reported
+# wait time, so once it elapses the model is tried again like nothing
+# happened.
 #
 # The fingerprint component matters once BYOK is in play: the same
 # (provider, model) can appear more than once in one effective chain (a
@@ -167,6 +192,14 @@ def _transient_errors():
 # would incorrectly poison this process-wide cache entry for a different
 # user (or the server) hitting the same (provider, model) with a different
 # key.
+#
+# base_url matters once custom BYOK providers are in play: `provider` there
+# is a per-user label, not a fixed name — deleting a custom entry and
+# recreating one with the same label but a DIFFERENT base_url (and
+# coincidentally the same key) must not inherit the old entry's stale
+# exhaustion cache. base_url is always None for the 4 known providers, so
+# this is a no-op dimension for every entry that existed before custom
+# providers did.
 _exhausted_until: dict = {}
 
 
@@ -193,30 +226,35 @@ def _parse_retry_after(message: str) -> float:
     return (int(hours or 0) * 3600) + (int(minutes or 0) * 60) + float(seconds)
 
 
-def _mark_exhausted(provider: str, model: str, fingerprint: str, exc: Exception) -> None:
-    """Cache (provider, model, fingerprint) as not-worth-retrying until the
-    provider's own reported wait time elapses. Only for RateLimitError —
-    auth/permission/connection errors aren't time-based, so waiting doesn't
-    fix them; caching those would just delay a legitimate retry once the
-    real problem (bad key, network blip) is fixed."""
+def _mark_exhausted(provider: str, model: str, fingerprint: str, base_url: str, exc: Exception) -> None:
+    """Cache (provider, model, fingerprint, base_url) as not-worth-retrying
+    until the provider's own reported wait time elapses. Only for
+    RateLimitError — auth/permission/connection errors aren't time-based,
+    so waiting doesn't fix them; caching those would just delay a
+    legitimate retry once the real problem (bad key, network blip) is
+    fixed."""
     import groq
     import openai
     if not isinstance(exc, (groq.RateLimitError, openai.RateLimitError)):
         return
     wait = _parse_retry_after(str(exc))
-    _exhausted_until[(provider, model, fingerprint)] = time.time() + wait
+    _exhausted_until[(provider, model, fingerprint, base_url)] = time.time() + wait
     key_desc = 'your key' if fingerprint != 'server' else 'server key'
     log.info(f'llm rotation: caching {provider}:{model} ({key_desc}) as exhausted for {wait:.0f}s')
 
 
 class _RotatingLLM:
-    """Wraps a chain of (provider, model, api_key) triples and falls back to
-    the next one if the current one's rate limit / daily token quota is
-    exhausted, the org's console doesn't have it enabled, the API key is
-    missing/invalid, or it timed out/errored — see _transient_errors().
-    `api_key` is None for a server/env-configured entry, or an explicit
-    string for a BYOK entry (see make_llm()) — either way it's resolved
-    into a client by the matching builder in _PROVIDER_BUILDERS.
+    """Wraps a chain of (provider, model, api_key, base_url) 4-tuples and
+    falls back to the next one if the current one's rate limit / daily
+    token quota is exhausted, the org's console doesn't have it enabled,
+    the API key is missing/invalid, or it timed out/errored — see
+    _transient_errors(). `api_key` is None for a server/env-configured
+    entry, or an explicit string for a BYOK entry (see make_llm()).
+    `base_url` is None for one of the 4 known providers (resolved via
+    _PROVIDER_BUILDERS, same as always) or a URL string for a custom BYOK
+    provider (built directly via _build_custom_client, bypassing
+    _PROVIDER_BUILDERS entirely — `provider` there is just the user's own
+    label, not a lookup key).
 
     Once a call falls back to a later entry, this instance keeps using it
     for the rest of its calls instead of re-hitting the exhausted one every
@@ -229,22 +267,27 @@ class _RotatingLLM:
     """
 
     def __init__(self, chain: list, temperature: float, timeout: float):
-        self._chain = chain  # list of (provider, model, api_key) triples
+        self._chain = chain  # list of (provider, model, api_key, base_url) 4-tuples
         self._temperature = temperature
         self._timeout = timeout
         self._clients: dict = {}
         self._idx = 0
 
     def _client_for(self, idx: int):
-        provider, model, api_key = self._chain[idx]
-        # Fingerprinted so a user-keyed and a server-keyed client for the
-        # same (provider, model) never collide in this cache — see
-        # _fingerprint's docstring.
-        key = (provider, model, _fingerprint(api_key))
+        provider, model, api_key, base_url = self._chain[idx]
+        # Fingerprinted (and base_url-qualified) so a user-keyed and a
+        # server-keyed client for the same (provider, model) never collide
+        # in this cache, and neither do two custom entries that happen to
+        # share a label but point at different URLs — see _fingerprint's
+        # docstring and _exhausted_until's comment.
+        key = (provider, model, _fingerprint(api_key), base_url)
         if key not in self._clients:
-            builder = _PROVIDER_BUILDERS.get(provider)
-            if builder is None:
-                raise ValueError(f'unknown LLM provider {provider!r}')
+            if base_url:
+                builder = _build_custom_client(base_url)
+            else:
+                builder = _PROVIDER_BUILDERS.get(provider)
+                if builder is None:
+                    raise ValueError(f'unknown LLM provider {provider!r}')
             self._clients[key] = builder(model, self._temperature, self._timeout, api_key=api_key)
         return self._clients[key]
 
@@ -275,7 +318,7 @@ class _RotatingLLM:
         fallback = None
         remaining = list(range(self._idx, len(self._chain)))
         for pos, idx in enumerate(remaining):
-            provider, model, api_key = self._chain[idx]
+            provider, model, api_key, base_url = self._chain[idx]
             fp = _fingerprint(api_key)
             # Always really attempt the LAST remaining entry even if cached
             # as exhausted, so there's always at least one real attempt (and
@@ -283,7 +326,7 @@ class _RotatingLLM:
             # cached — otherwise an all-exhausted chain would fall through
             # this loop with last_exc still None.
             is_last = pos == len(remaining) - 1
-            until = _exhausted_until.get((provider, model, fp), 0.0)
+            until = _exhausted_until.get((provider, model, fp, base_url), 0.0)
             if not is_last and until > time.time():
                 log.info(f'llm rotation: skipping {provider}:{model} (known exhausted '
                          f'for {until - time.time():.0f}s more), trying next in chain')
@@ -294,7 +337,7 @@ class _RotatingLLM:
                 last_exc = exc
                 log.warning(f'llm rotation: {provider}:{model} unavailable '
                             f'({type(exc).__name__}: {exc}), trying next in chain')
-                _mark_exhausted(provider, model, fp, exc)
+                _mark_exhausted(provider, model, fp, base_url, exc)
                 continue
             if not committed and idx != self._idx:
                 log.warning(f'llm rotation: switched to {provider}:{model} '
@@ -353,43 +396,57 @@ def _resolve_chain(env_var: str, default_chain: list) -> list:
 
 
 def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: float = None,
-             user_keys: dict = None):
+             user_keys: dict = None, custom_providers: list = None):
     """Build the LLM client used by pipeline nodes.
 
     `user_keys`, when given, is a plain {provider: api_key} dict of a
-    user's own saved BYOK keys (already resolved/decrypted once by
-    graph.py's run_pipeline() — this function never touches the DB). Their
-    own chain — expanded across each provider's normal *_MODEL_CHAIN,
-    priority order groq > nvidia > openrouter > deepseek — is tried FIRST;
-    the server's own env-configured chain (unchanged from before BYOK
-    existed) is appended after it as a fallback. With user_keys=None/{}
-    (every call site before this feature, and any user with no saved
-    keys), behavior is byte-for-byte identical to before this parameter
-    existed.
+    user's own saved BYOK keys for the 4 known providers (already
+    resolved/decrypted once by graph.py's run_pipeline() — this function
+    never touches the DB).
+
+    `custom_providers`, when given, is a list of already-resolved/decrypted
+    {'label', 'base_url', 'models': [...], 'api_key'} dicts — a user's own
+    arbitrary OpenAI-compatible endpoints, not limited to the 4 known
+    providers (see graph.py's _resolve_custom_providers). Also never
+    touches the DB here.
+
+    Effective chain, in priority order: custom providers (most deliberate,
+    specific thing a user can configure — they typed a URL and picked a
+    model by hand) FIRST, then the 4 known-provider BYOK keys (priority
+    groq > nvidia > openrouter > deepseek, each expanded across that
+    provider's normal *_MODEL_CHAIN), then the server's own env-configured
+    chain (unchanged from before BYOK existed) as the final fallback. With
+    user_keys=None/{} and custom_providers=None/[] (every call site before
+    BYOK existed, and any user with no saved keys/providers), behavior is
+    byte-for-byte identical to before either parameter existed.
 
     `model` pins one specific Groq model, bypassing rotation entirely (and
-    BYOK — no current call site uses this, see the note below) — use only
-    when a node genuinely needs a particular model.
+    both BYOK params — no current call site uses this, see the note below)
+    — use only when a node genuinely needs a particular model.
 
     Without `model`, returns a client that transparently rotates through
     the effective chain above, trying each tier only once every entry
-    ahead of it is exhausted/blocked. Every *_MODEL_CHAIN can also be
-    overridden via the matching env var (comma-separated), without a code
-    change — this applies equally to a BYOK user's expanded tiers, since
-    the model *lineup* is a deployment concern, only the *key* is per-user.
+    ahead of it is exhausted/blocked. Every known provider's *_MODEL_CHAIN
+    can also be overridden via the matching env var (comma-separated),
+    without a code change — this applies equally to a BYOK user's expanded
+    known-provider tiers, since the model *lineup* is a deployment concern
+    there, only the *key* is per-user. A custom provider's model list has
+    no env-var equivalent — it's entirely user-specified, stored on the row
+    itself.
     """
     user_keys = user_keys or {}
+    custom_providers = custom_providers or []
     server_provider = which_provider()
-    if not user_keys and server_provider != 'groq':
+    if not user_keys and not custom_providers and server_provider != 'groq':
         raise RuntimeError(
             'No LLM API key configured. Set GROQ_API_KEY (get one free at '
             'https://console.groq.com/keys), or add your own key on the API Keys page.'
         )
     resolved_timeout = timeout or LLM_TIMEOUT_SECONDS
     if model:
-        # NOTE: this pinned-model bypass does not consult user_keys — no
-        # current call site uses `model=`, so BYOK support here is deferred
-        # until a caller actually needs it.
+        # NOTE: this pinned-model bypass does not consult user_keys or
+        # custom_providers — no current call site uses `model=`, so BYOK
+        # support here is deferred until a caller actually needs it.
         from langchain_groq import ChatGroq
         return ChatGroq(
             model=model,
@@ -399,28 +456,31 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
         )
 
     chain = []
+    for entry in custom_providers:                                 # user's custom providers FIRST
+        chain += [(entry['label'], m, entry['api_key'], entry['base_url']) for m in entry['models']]
+
     default_chains = {'groq': GROQ_MODEL_CHAIN, 'nvidia': NVIDIA_MODEL_CHAIN,
                        'openrouter': OPENROUTER_MODEL_CHAIN, 'deepseek': DEEPSEEK_MODEL_CHAIN}
-    for provider in ('groq', 'nvidia', 'openrouter', 'deepseek'):   # user's own chain FIRST
+    for provider in ('groq', 'nvidia', 'openrouter', 'deepseek'):   # then user's known-provider keys
         key = user_keys.get(provider)
         if not key:
             continue
         models = _resolve_chain(f'{provider.upper()}_MODEL_CHAIN', default_chains[provider])
-        chain += [(provider, m, key) for m in models]
+        chain += [(provider, m, key, None) for m in models]
 
     if server_provider == 'groq':                                  # then the server's chain, unchanged
         single_override = os.environ.get('GROQ_MODEL')
         groq_models = [single_override] if single_override else _resolve_chain('GROQ_MODEL_CHAIN', GROQ_MODEL_CHAIN)
-        chain += [('groq', m, None) for m in groq_models]
+        chain += [('groq', m, None, None) for m in groq_models]
     if has_nvidia_fallback():
         nvidia_models = _resolve_chain('NVIDIA_MODEL_CHAIN', NVIDIA_MODEL_CHAIN)
-        chain += [('nvidia', m, None) for m in nvidia_models]
+        chain += [('nvidia', m, None, None) for m in nvidia_models]
     if has_openrouter_fallback():
         openrouter_models = _resolve_chain('OPENROUTER_MODEL_CHAIN', OPENROUTER_MODEL_CHAIN)
-        chain += [('openrouter', m, None) for m in openrouter_models]
+        chain += [('openrouter', m, None, None) for m in openrouter_models]
     if has_deepseek_fallback():
         deepseek_models = _resolve_chain('DEEPSEEK_MODEL_CHAIN', DEEPSEEK_MODEL_CHAIN)
-        chain += [('deepseek', m, None) for m in deepseek_models]
+        chain += [('deepseek', m, None, None) for m in deepseek_models]
 
     return _RotatingLLM(chain, temperature, resolved_timeout)
 

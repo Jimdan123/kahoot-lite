@@ -103,22 +103,70 @@ def _should_retry(state: PipelineState) -> str:
 
 
 def _resolve_user_llm_keys(owner_id: int) -> dict:
-    """Query + decrypt this user's saved BYOK keys once per run (not once
-    per node — see PipelineState['user_llm_keys']). A row that fails to
-    decrypt (e.g. API_KEY_ENCRYPTION_KEY was rotated/lost since it was
+    """Query + decrypt this user's saved BYOK keys for the 4 known
+    providers once per run (not once per node — see
+    PipelineState['user_llm_keys']). Custom-provider rows are handled
+    separately by _resolve_custom_providers below — the is_custom=False
+    filter keeps this resolver from wastefully decrypting (and building a
+    dead dict entry for) a row it would never use anyway. A row that fails
+    to decrypt (e.g. API_KEY_ENCRYPTION_KEY was rotated/lost since it was
     saved) is logged and dropped rather than failing the whole run —
     consistent with this pipeline's "one bad input doesn't kill the run"
     philosophy elsewhere (generate.py/critic.py's per-item try/except)."""
     from app.crypto_utils import DecryptionError
     from app.models import UserApiKey
     keys = {}
-    for row in UserApiKey.query.filter_by(user_id=owner_id).all():
+    for row in UserApiKey.query.filter_by(user_id=owner_id, is_custom=False).all():
         try:
             keys[row.provider] = row.get_key()
         except DecryptionError as exc:
             log.warning(f'run_pipeline: could not decrypt saved {row.provider} key for '
                         f'user {owner_id} ({exc}); skipping it for this run')
     return keys
+
+
+def _resolve_custom_providers(owner_id: int) -> list:
+    """Query + decrypt this user's saved custom-provider rows once per run
+    (mirrors _resolve_user_llm_keys above). A row missing base_url or a
+    usable model_name, one that fails to decrypt, or one whose base_url
+    now fails the SSRF check, is logged and dropped rather than failing
+    the whole run — same "one bad input doesn't kill the run" philosophy.
+
+    The SSRF re-check here (not just at save time in CustomProviderForm)
+    matters against DNS rebinding: a hostname could resolve to a public IP
+    when the row was saved, then be repointed at an internal address
+    before a pipeline run actually uses it — see
+    app/ssrf_protection.py's module docstring for the full threat model
+    and the residual TOCTOU gap this narrows but doesn't fully close."""
+    from app.crypto_utils import DecryptionError
+    from app.models import UserApiKey
+    from app.ssrf_protection import SSRFError, validate_public_https_url
+    providers = []
+    rows = (UserApiKey.query
+            .filter_by(user_id=owner_id, is_custom=True)
+            .order_by(UserApiKey.id)
+            .all())
+    for row in rows:
+        models = [m.strip() for m in (row.model_name or '').split(',') if m.strip()]
+        if not row.base_url or not models:
+            log.warning(f'run_pipeline: skipping malformed custom provider {row.provider!r} '
+                        f'for user {owner_id} (missing base_url or model_name)')
+            continue
+        try:
+            validate_public_https_url(row.base_url)
+        except SSRFError as exc:
+            log.warning(f'run_pipeline: custom provider {row.provider!r} for user {owner_id} '
+                        f'failed the SSRF check at run time ({exc}); skipping it for this run')
+            continue
+        try:
+            api_key = row.get_key()
+        except DecryptionError as exc:
+            log.warning(f'run_pipeline: could not decrypt saved custom provider {row.provider!r} '
+                        f'key for user {owner_id} ({exc}); skipping it for this run')
+            continue
+        providers.append({'label': row.provider, 'base_url': row.base_url,
+                           'models': models, 'api_key': api_key})
+    return providers
 
 
 def _bump_retry(state: PipelineState) -> dict:
@@ -189,7 +237,8 @@ def run_pipeline(
     Raises RuntimeError on any fatal state['error'].
     """
     user_llm_keys = _resolve_user_llm_keys(owner_id)
-    if not user_llm_keys and which_provider() is None:
+    custom_llm_providers = _resolve_custom_providers(owner_id)
+    if not user_llm_keys and not custom_llm_providers and which_provider() is None:
         raise RuntimeError(
             'No LLM API key configured. Set GROQ_API_KEY (free at '
             'https://console.groq.com/keys), or add your own key on the API Keys page.'
@@ -203,6 +252,7 @@ def run_pipeline(
         'retry_count': 0,
         'progress_cb': progress_cb,
         'user_llm_keys': user_llm_keys,
+        'custom_llm_providers': custom_llm_providers,
         'token_usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
     }
     log.info(f'run_pipeline starting: pdf={pdf_path} owner={owner_id}')

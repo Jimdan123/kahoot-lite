@@ -44,7 +44,20 @@ class UserApiKey(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
-    provider = db.Column(db.String(20), nullable=False)   # 'groq' | 'nvidia' | 'openrouter' | 'deepseek'
+    # One of 'groq'/'nvidia'/'openrouter'/'deepseek' for a known provider, or
+    # the user's own trimmed label for a custom one (is_custom=True) — never
+    # ambiguous, since CustomProviderForm.validate_label rejects the 4
+    # reserved names. String(50), not 20: a real custom label needs room
+    # ("Together AI Free Tier" alone is 22 chars).
+    provider = db.Column(db.String(50), nullable=False)
+    # True for a user-defined arbitrary OpenAI-compatible endpoint (base_url/
+    # model_name set) rather than one of the 4 hardcoded providers (whose
+    # base_url/model chain live in app/ai/langgraph_flow/config/providers.py
+    # instead). Explicit column, never inferred from base_url being set, so
+    # every reader has one trustworthy discriminator.
+    is_custom = db.Column(db.Boolean, nullable=False, default=False, server_default='false')
+    base_url = db.Column(db.String(500))    # set only when is_custom
+    model_name = db.Column(db.Text)         # comma-separated model list, set only when is_custom
     encrypted_key = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
