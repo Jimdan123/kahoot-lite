@@ -239,9 +239,14 @@ def run_pipeline(
     user_llm_keys = _resolve_user_llm_keys(owner_id)
     custom_llm_providers = _resolve_custom_providers(owner_id)
     if not user_llm_keys and not custom_llm_providers and which_provider() is None:
+        # Message deliberately doesn't name the server's specific provider —
+        # this reaches the end user via the failed-job UI (app/ai/routes.py's
+        # _worker() catches this and stores str(exc) as job.error). An
+        # operator setting up their own deployment gets the actual env var
+        # name from .env.example/README instead.
         raise RuntimeError(
-            'No LLM API key configured. Set GROQ_API_KEY (free at '
-            'https://console.groq.com/keys), or add your own key on the API Keys page.'
+            'No AI provider is configured. Add your own key on the API Keys '
+            'page, or ask the site operator to configure one.'
         )
     initial: PipelineState = {
         'pdf_path': pdf_path,

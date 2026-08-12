@@ -214,13 +214,17 @@ def generate_questions(state: PipelineState) -> dict:
                               for r in chunk_records}
     n_chunks = len(chunks)
     quotas = _allocate_quotas(n_chunks, comprehension)
-    emit(state, f'Connecting to Groq (0/{n_chunks})…', 0.45)
+    emit(state, f'Connecting to the AI service (0/{n_chunks})…', 0.45)
     try:
         llm = make_llm(user_keys=state.get('user_llm_keys'), custom_providers=state.get('custom_llm_providers'))
     except Exception as exc:
         # Fatal: can't make the client at all (bad model name, missing/invalid key).
-        log.error(f'ChatGroq init failed: {exc!r}')
-        return {'error': f'Could not initialize Groq client: {exc}'}
+        # Message deliberately generic — this reaches the end user via the
+        # failed-job UI, and which underlying provider/model powers the app
+        # isn't something to expose there. Full detail (including exc,
+        # which may mention the provider) still goes to the server log.
+        log.error(f'LLM client init failed: {exc!r}')
+        return {'error': f'Could not initialize the AI client: {exc}'}
 
     drafts: List[dict] = []
     first_error = None
@@ -246,7 +250,7 @@ def generate_questions(state: PipelineState) -> dict:
             log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
             if not parsed:
                 raise ValueError(
-                    f'Groq response was not parseable as JSON '
+                    f'AI response was not parseable as JSON '
                     f'({len(content_to_text(resp.content))} chars received, '
                     f'see the parse_llm_json warning above for exactly where it broke)'
                 )

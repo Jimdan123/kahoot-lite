@@ -41,12 +41,16 @@ PDF_MAGIC = b'%PDF-'
 @limiter.limit('5 per hour; 2 per minute', methods=['POST'])
 def upload():
     if request.method == 'GET':
-        provider = which_provider()
+        # Deliberately does NOT pass which_provider()'s actual value to the
+        # template — which underlying LLM provider/model powers the app is
+        # not something to expose to end users, just whether the feature is
+        # usable at all (server-configured, the user's own key, or neither).
+        server_has_key = which_provider() is not None
         user_has_keys = UserApiKey.query.filter_by(user_id=current_user.id).first() is not None
         return render_template(
             'ai/upload.html',
-            enabled=(provider is not None or user_has_keys),
-            provider=provider,
+            enabled=(server_has_key or user_has_keys),
+            server_has_key=server_has_key,
             user_has_keys=user_has_keys,
             practice_default=PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_min=MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,

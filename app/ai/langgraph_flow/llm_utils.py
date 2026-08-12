@@ -438,9 +438,13 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
     custom_providers = custom_providers or []
     server_provider = which_provider()
     if not user_keys and not custom_providers and server_provider != 'groq':
+        # Message deliberately doesn't name the server's specific provider —
+        # this reaches the end user via the failed-job UI. An operator
+        # setting up their own deployment gets the actual env var name from
+        # .env.example/README instead, not from a runtime user-facing error.
         raise RuntimeError(
-            'No LLM API key configured. Set GROQ_API_KEY (get one free at '
-            'https://console.groq.com/keys), or add your own key on the API Keys page.'
+            'No AI provider is configured. Add your own key on the API Keys '
+            'page, or ask the site operator to configure one.'
         )
     resolved_timeout = timeout or LLM_TIMEOUT_SECONDS
     if model:
