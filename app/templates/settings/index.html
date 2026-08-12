@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block title %}API Keys - Kahoot-lite{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-7">
+        <div class="card mb-4">
+            <div class="card-body">
+                <h3>Your API Keys</h3>
+                <p class="text-muted">
+                    Add your own provider key so your quiz generation uses your own quota
+                    instead of the shared server key. Your saved key(s) are tried first,
+                    then the server's own key as a fallback.
+                </p>
+                <form method="POST">
+                    {{ form.hidden_tag() }}
+                    <div class="mb-3">
+                        {{ form.provider.label(class='form-label') }}
+                        {{ form.provider(class='form-select') }}
+                    </div>
+                    <div class="mb-3">
+                        {{ form.api_key.label(class='form-label') }}
+                        {{ form.api_key(class='form-control') }}
+                    </div>
+                    {{ form.submit(class='btn btn-primary') }}
+                </form>
+            </div>
+        </div>
+
+        {% if saved_keys %}
+        <div class="card">
+            <div class="card-body">
+                <h5>Saved Keys</h5>
+                <table class="table align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Provider</th>
+                            <th>Last updated</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for key in saved_keys %}
+                        <tr>
+                            <td>{{ provider_labels.get(key.provider, key.provider) }}</td>
+                            <td class="text-muted">{{ key.updated_at.strftime('%Y-%m-%d') if key.updated_at else '' }}</td>
+                            <td class="text-end">
+                                <form method="POST" action="{{ url_for('settings.delete_key', provider=key.provider) }}" class="d-inline" onsubmit="return confirm('Remove your ' + '{{ provider_labels.get(key.provider, key.provider) }}' + ' key?');">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

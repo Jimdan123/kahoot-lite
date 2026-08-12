@@ -117,12 +117,12 @@ def generate_practice_questions(state: PipelineState) -> dict:
     ) if existing else ''
 
     try:
-        llm = make_llm(temperature=0.4)
+        llm = make_llm(temperature=0.4, user_keys=state.get('user_llm_keys'))
         resp, parsed = invoke_json(llm, [
             SystemMessage(content=_PRACTICE_SYSTEM.format(
                 topic=topic, existing_block=existing_block, n=n, total=total)),
             HumanMessage(content='Write the practice questions now.'),
-        ])
+        ], token_usage=state.get('token_usage'))
         if not isinstance(parsed, list):
             raise ValueError('practice response was not a JSON array')
     except Exception as exc:

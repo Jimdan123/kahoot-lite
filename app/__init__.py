@@ -14,6 +14,11 @@ def create_app(config_name='default'):
     # a predictable dev key in prod would let anyone forge session cookies.
     if config_name == 'production' and not os.environ.get('SECRET_KEY'):
         raise RuntimeError('SECRET_KEY environment variable is required in production')
+    # Same reasoning for the BYOK API-key encryption secret — a predictable
+    # dev value in prod would let anyone with DB read access decrypt every
+    # user's saved provider API keys.
+    if config_name == 'production' and not os.environ.get('API_KEY_ENCRYPTION_KEY'):
+        raise RuntimeError('API_KEY_ENCRYPTION_KEY environment variable is required in production')
 
     # On Render (and most PaaS) the app sits behind one reverse proxy that sets
     # X-Forwarded-For. Trust exactly that one hop so the rate limiter sees each
@@ -44,12 +49,14 @@ def create_app(config_name='default'):
     from app.quiz import quiz_bp
     from app.game import game_bp
     from app.ai import ai_bp
+    from app.settings import settings_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(quiz_bp, url_prefix='/quiz')
     app.register_blueprint(game_bp, url_prefix='/game')
     app.register_blueprint(ai_bp, url_prefix='/ai')
+    app.register_blueprint(settings_bp, url_prefix='/settings')
 
     register_security_headers(app, is_production=(config_name == 'production'))
 
@@ -72,6 +79,9 @@ def create_app(config_name='default'):
         from sqlalchemy import text
         db.session.execute(text(
             'ALTER TABLE questions ADD COLUMN IF NOT EXISTS source VARCHAR(20)'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE question_sets ADD COLUMN IF NOT EXISTS total_tokens INTEGER'
         ))
         db.session.commit()
 

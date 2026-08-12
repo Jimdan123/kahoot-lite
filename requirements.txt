@@ -30,6 +30,12 @@ tavily-python>=0.5.0          # optional enrich_context node — see nodes/enric
 # entirely unless MLFLOW_TRACKING_URI is set — see evals/config.py.
 mlflow-skinny>=2.16.0
 
+# BYOK — encrypts user-saved provider API keys at rest (app/crypto_utils.py).
+# Already resolves transitively via google-auth/mlflow/pdfminer, but app
+# code now depends on it directly too — pinned so it doesn't silently
+# disappear if one of those transitive chains changes.
+cryptography>=42.0.0
+
 # Dev tools
 ruff>=0.6.0
 pytest>=8.0.0                 # tests/test_extract_shapes.py, tests/test_chunk_segments.py —

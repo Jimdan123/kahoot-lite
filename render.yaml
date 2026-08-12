@@ -16,6 +16,10 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
+      # Required in production, same as SECRET_KEY — encrypts user-saved
+      # BYOK provider API keys at rest (app/crypto_utils.py).
+      - key: API_KEY_ENCRYPTION_KEY
+        generateValue: true
       - key: DATABASE_URL
         fromDatabase:
           name: kahoot-lite-db

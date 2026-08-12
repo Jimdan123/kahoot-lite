@@ -29,6 +29,7 @@ from app.ai.langgraph_flow.config import (
     PRACTICE_QUESTIONS_PER_DIFFICULTY,
 )
 from app.extensions import limiter, socketio
+from app.models import UserApiKey
 
 
 MAX_PDF_BYTES = 10 * 1024 * 1024        # 10 MB
@@ -40,10 +41,13 @@ PDF_MAGIC = b'%PDF-'
 @limiter.limit('5 per hour; 2 per minute', methods=['POST'])
 def upload():
     if request.method == 'GET':
+        provider = which_provider()
+        user_has_keys = UserApiKey.query.filter_by(user_id=current_user.id).first() is not None
         return render_template(
             'ai/upload.html',
-            enabled=which_provider() is not None,
-            provider=which_provider(),
+            enabled=(provider is not None or user_has_keys),
+            provider=provider,
+            user_has_keys=user_has_keys,
             practice_default=PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_min=MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY,
             practice_max=MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY,

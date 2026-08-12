@@ -103,7 +103,7 @@ def comprehend_chunks(state: PipelineState) -> dict:
     chunks = state['chunks']
     n_chunks = len(chunks)
     emit(state, f'Reading for comprehension (0/{n_chunks})…', 0.25)
-    llm = make_llm(temperature=0.0)  # extraction should be deterministic, not creative
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))  # extraction should be deterministic, not creative
 
     records: List[dict] = []
     for i, chunk in enumerate(chunks):
@@ -115,7 +115,7 @@ def comprehend_chunks(state: PipelineState) -> dict:
             resp, parsed = invoke_json(llm, [
                 SystemMessage(content=_COMPREHEND_SYSTEM),
                 HumanMessage(content=f'Passage:\n\n{chunk}'),
-            ])
+            ], token_usage=state.get('token_usage'))
             if isinstance(parsed, dict):
                 record.update({k: parsed.get(k, []) for k in
                                ('claims', 'definitions', 'mechanisms', 'quantities')})
@@ -207,12 +207,12 @@ def merge_comprehension(state: PipelineState) -> dict:
     if not records:
         return {'comprehension': _empty_comprehension()}
 
-    llm = make_llm(temperature=0.0)
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))
     try:
         resp, merged = invoke_json(llm, [
             SystemMessage(content=_MERGE_SYSTEM),
             HumanMessage(content=json.dumps(records, ensure_ascii=False)),
-        ])
+        ], token_usage=state.get('token_usage'))
         if not isinstance(merged, dict) or not merged:
             raise ValueError('merge response was not a usable JSON object')
     except Exception as exc:

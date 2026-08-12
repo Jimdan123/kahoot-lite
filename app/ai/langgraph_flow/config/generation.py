@@ -1,7 +1,20 @@
 """Question-generation and OCR tunables for the quiz-generation pipeline."""
 from __future__ import annotations
 
-QUESTIONS_PER_CHUNK = 3                  # asked of the LLM per chunk
+QUESTIONS_PER_CHUNK = 3                  # baseline asked of the LLM per chunk
+# Per-chunk quota is scaled up from the baseline for short documents and for
+# chunks that score as more important (see nodes/generate.py's
+# _allocate_quotas) — this caps how high either adjustment can push a single
+# chunk's quota, so a one-paragraph PDF doesn't get asked for 15 questions
+# from the same short passage.
+MAX_QUESTIONS_PER_CHUNK = 6
+# generate_questions targets a total draft pool of roughly
+# MIN_ACCEPTED_QUESTIONS * this factor, spread across chunks — a safety
+# margin against quality_check's own rejection rate (structural issues,
+# decorative hops, ambiguity, dedup). Confirmed necessary live: a 3-chunk
+# document with no scaling settled at 3 accepted questions, under its own
+# 5-question floor, after exhausting every retry.
+SHORT_DOC_QUOTA_SAFETY_FACTOR = 2.0
 MIN_ACCEPTED_QUESTIONS = 5               # else we retry the generate step
 MAX_RETRIES = 2
 # Time limit is decided per-question by the LLM (a multi-step stats

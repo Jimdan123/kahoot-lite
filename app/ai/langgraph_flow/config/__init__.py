@@ -24,6 +24,7 @@ from app.ai.langgraph_flow.config.generation import (
     LLM_TEMPERATURE,
     LLM_TIMEOUT_SECONDS,
     MAX_OCR_PAGES,
+    MAX_QUESTIONS_PER_CHUNK,
     MAX_RETRIES,
     MAX_TIME_LIMIT,
     MIN_ACCEPTED_QUESTIONS,
@@ -31,6 +32,7 @@ from app.ai.langgraph_flow.config.generation import (
     OCR_LANGUAGES,
     OCR_RESOLUTION,
     QUESTIONS_PER_CHUNK,
+    SHORT_DOC_QUOTA_SAFETY_FACTOR,
 )
 from app.ai.langgraph_flow.config.providers import (
     DEEPSEEK_API_BASE,
@@ -67,6 +69,7 @@ __all__ = [
     'MAX_LINKS_PER_CHUNK',
     'MAX_OCR_PAGES',
     'MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY',
+    'MAX_QUESTIONS_PER_CHUNK',
     'MAX_RETRIES',
     'MAX_SEARCH_RESULTS',
     'MAX_TIME_LIMIT',
@@ -83,6 +86,7 @@ __all__ = [
     'OPENROUTER_MODEL_CHAIN',
     'PRACTICE_QUESTIONS_PER_DIFFICULTY',
     'QUESTIONS_PER_CHUNK',
+    'SHORT_DOC_QUOTA_SAFETY_FACTOR',
     'THIN_DOCUMENT_DEFINITION_RATIO',
     'has_deepseek_fallback',
     'has_nvidia_fallback',

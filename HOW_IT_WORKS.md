@@ -340,6 +340,14 @@ Multiple independent defenses. Each one only has to hold for its own thing.
   to boot if `SECRET_KEY` isn't set.
 - Cookies flagged `HttpOnly`, `Secure`, `SameSite=Lax` in production
   (`ProductionConfig`).
+- User-saved BYOK provider API keys (Settings → API Keys) are encrypted at
+  rest with a separate secret, `API_KEY_ENCRYPTION_KEY` (`app/crypto_utils.py`,
+  Fernet) — deliberately not derived from `SECRET_KEY`, since rotating a
+  session-signing key and rotating a data-encryption key are different
+  concerns. Production `create_app` refuses to boot if it isn't set, same
+  as `SECRET_KEY`. If it's ever rotated, previously-saved keys just stop
+  decrypting — that provider is dropped from the user's chain for future
+  runs (a warning is logged), not a crash.
 
 ### Cross-Site Request Forgery (CSRF)
 

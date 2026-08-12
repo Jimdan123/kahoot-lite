@@ -53,12 +53,12 @@ def closed_book_check(state: PipelineState) -> dict:
          'A': q.get('A', ''), 'B': q.get('B', ''), 'C': q.get('C', ''), 'D': q.get('D', '')}
         for i, q in enumerate(drafts)
     ]
-    llm = make_llm(temperature=0.0)
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))
     try:
         resp, results = invoke_json(llm, [
             SystemMessage(content=_CLOSED_BOOK_SYSTEM),
             HumanMessage(content=json.dumps(items, ensure_ascii=False)),
-        ])
+        ], token_usage=state.get('token_usage'))
         if not isinstance(results, list) or len(results) != len(drafts):
             raise ValueError(f'expected {len(drafts)} results, got '
                               f'{len(results) if isinstance(results, list) else type(results)}')
@@ -129,9 +129,15 @@ entire response.
 
 def quality_check(state: PipelineState) -> dict:
     emit(state, 'Checking quality…', 0.85)
+    # Questions already accepted on an earlier retry attempt (see graph.py's
+    # retry loop) — generate_questions writes fresh drafts each retry from
+    # the same unchanged comprehension record, so without carrying these
+    # forward a retry would silently throw away good questions attempt 1
+    # already found, instead of building on them toward MIN_ACCEPTED_QUESTIONS.
+    accumulated = list(state.get('validated_questions') or [])
     drafts = state.get('draft_questions') or []
     if not drafts:
-        return {'validated_questions': []}
+        return {'validated_questions': accumulated}
 
     closed_book = state.get('closed_book_results') or [{} for _ in drafts]
     # Computed here, in Python, from closed_book_check's own results rather
@@ -148,12 +154,12 @@ def quality_check(state: PipelineState) -> dict:
         for q in drafts
     ]
 
-    llm = make_llm(temperature=0.0)  # deterministic grading
+    llm = make_llm(temperature=0.0, user_keys=state.get('user_llm_keys'))  # deterministic grading
     try:
         resp, verdicts = invoke_json(llm, [
             SystemMessage(content=_CRITIC_SYSTEM),
             HumanMessage(content=json.dumps(items, ensure_ascii=False)),
-        ])
+        ], token_usage=state.get('token_usage'))
         if not isinstance(verdicts, list) or len(verdicts) != len(drafts):
             raise ValueError('critic response malformed')
         keep = [(q, leaked[i]) for i, (q, v) in enumerate(zip(drafts, verdicts))
@@ -164,9 +170,11 @@ def quality_check(state: PipelineState) -> dict:
         log.warning(f'quality_check: critic call failed ({exc!r}), falling back to structural checks')
         keep = [(q, leaked[i]) for i, q in enumerate(drafts) if _structurally_valid(q)]
 
-    # Dedupe by exact question text (case-insensitive)
-    seen: set = set()
-    unique: List[dict] = []
+    # Dedupe by exact question text (case-insensitive) — seeded with
+    # already-accumulated questions from earlier retries so this attempt's
+    # drafts can't re-add a near-identical question a prior attempt kept.
+    unique: List[dict] = list(accumulated)
+    seen: set = {(q.get('question') or '').strip().lower() for q in accumulated}
     n_tagged = 0
     for q, is_leak in keep:
         key = (q.get('question') or '').strip().lower()
@@ -176,8 +184,9 @@ def quality_check(state: PipelineState) -> dict:
                 q['source'] = 'closed_book'
                 n_tagged += 1
             unique.append(q)
-    log.info(f'quality_check: {len(unique)}/{len(drafts)} questions passed '
-             f'({n_tagged} tagged closed_book)')
+    n_new = len(unique) - len(accumulated)
+    log.info(f'quality_check: {n_new}/{len(drafts)} new questions passed '
+             f'({n_tagged} tagged closed_book), {len(unique)} accepted total so far')
     return {'validated_questions': unique}
 
 

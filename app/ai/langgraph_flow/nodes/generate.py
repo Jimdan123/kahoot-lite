@@ -13,14 +13,18 @@ Field order matters here: an LLM filling JSON top-to-bottom that writes
 from __future__ import annotations
 
 import logging
+import math
 from typing import List
 
 from app.ai.langgraph_flow.config import (
     FALLBACK_TIME_LIMIT,
     MAX_LINKS_PER_CHUNK,
+    MAX_QUESTIONS_PER_CHUNK,
     MAX_TIME_LIMIT,
+    MIN_ACCEPTED_QUESTIONS,
     MIN_TIME_LIMIT,
     QUESTIONS_PER_CHUNK,
+    SHORT_DOC_QUOTA_SAFETY_FACTOR,
 )
 from app.ai.langgraph_flow.json_utils import content_to_text
 from app.ai.langgraph_flow.llm_utils import invoke_json, make_llm
@@ -154,6 +158,54 @@ Return a single JSON array. No prose, no code fences. Each element:
 """
 
 
+def _chunk_importance(n_chunks: int, comprehension: dict) -> List[float]:
+    """Score each chunk 0..n_chunks-1 by how central its content is to the
+    document, so its question quota can scale with that instead of being
+    flat. Cross-chunk LINKS are merge_comprehension's own signal for "this
+    connects to the rest of the document" (its docstring calls links "the
+    most valuable output of this step"); MECHANISMS are comprehend_chunks'
+    own signal for "this makes the best exam questions" (its docstring:
+    "look for them even if it takes rereading the passage"). A chunk with
+    neither still gets the baseline weight of 1.0, never zero — thin filler
+    chunks get fewer questions, not none."""
+    weights = [1.0] * n_chunks
+    for link in comprehension.get('links', []) or []:
+        for idx in (link.get('chunk_a'), link.get('chunk_b')):
+            if isinstance(idx, int) and 0 <= idx < n_chunks:
+                weights[idx] += 1.0
+    for m in comprehension.get('mechanisms', []) or []:
+        idx = m.get('chunk_index')
+        if isinstance(idx, int) and 0 <= idx < n_chunks:
+            weights[idx] += 0.5
+    return weights
+
+
+def _allocate_quotas(n_chunks: int, comprehension: dict) -> List[int]:
+    """Turn chunk importance weights into an integer per-chunk question
+    quota. The total budget scales with document length — short documents
+    (few chunks) target roughly MIN_ACCEPTED_QUESTIONS * SHORT_DOC_QUOTA_
+    SAFETY_FACTOR drafts total, a safety margin against quality_check's own
+    rejection rate, instead of the flat QUESTIONS_PER_CHUNK baseline
+    undershooting MIN_ACCEPTED_QUESTIONS after filtering (confirmed live: a
+    3-chunk document settled at 3 accepted questions, under its own
+    5-question floor, with no scaling). That total is then distributed
+    across chunks proportionally to importance rather than evenly, so a
+    chunk with more cross-chunk links or a real procedural mechanism gets a
+    bigger share than a chunk with neither. Every chunk still gets at least
+    1, capped at MAX_QUESTIONS_PER_CHUNK, so nothing is starved to zero or
+    asked for an unreasonable number of questions from one short passage."""
+    if n_chunks == 0:
+        return []
+    base = max(QUESTIONS_PER_CHUNK,
+               math.ceil(MIN_ACCEPTED_QUESTIONS * SHORT_DOC_QUOTA_SAFETY_FACTOR / n_chunks))
+    base = min(base, MAX_QUESTIONS_PER_CHUNK)
+    total_budget = base * n_chunks
+    weights = _chunk_importance(n_chunks, comprehension)
+    weight_sum = sum(weights) or float(n_chunks)
+    return [max(1, min(MAX_QUESTIONS_PER_CHUNK, round(total_budget * w / weight_sum)))
+            for w in weights]
+
+
 def generate_questions(state: PipelineState) -> dict:
     chunks = state['chunks']
     comprehension = state.get('comprehension') or {}
@@ -161,9 +213,10 @@ def generate_questions(state: PipelineState) -> dict:
     content_type_by_index = {r.get('chunk_index'): r.get('content_type', 'narrative')
                               for r in chunk_records}
     n_chunks = len(chunks)
+    quotas = _allocate_quotas(n_chunks, comprehension)
     emit(state, f'Connecting to Groq (0/{n_chunks})…', 0.45)
     try:
-        llm = make_llm()
+        llm = make_llm(user_keys=state.get('user_llm_keys'))
     except Exception as exc:
         # Fatal: can't make the client at all (bad model name, missing/invalid key).
         log.error(f'ChatGroq init failed: {exc!r}')
@@ -187,9 +240,9 @@ def generate_questions(state: PipelineState) -> dict:
         context = _build_context(i, comprehension, state.get('search_context') or [])
         try:
             resp, parsed = invoke_json(llm, [
-                SystemMessage(content=_GENERATE_SYSTEM.format(n=QUESTIONS_PER_CHUNK)),
+                SystemMessage(content=_GENERATE_SYSTEM.format(n=quotas[i])),
                 HumanMessage(content=f'Passage:\n\n{chunk}\n\n{context}'),
-            ])
+            ], token_usage=state.get('token_usage'))
             log.info(f'chunk {i + 1}/{n_chunks}: parsed {len(parsed)} draft questions')
             if not parsed:
                 raise ValueError(

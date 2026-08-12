@@ -15,6 +15,7 @@
                 {% if current_user.is_authenticated %}
                     <a class="btn btn-light btn-sm me-2" href="{{ url_for('quiz.index') }}">My Question Sets</a>
                     <a class="btn btn-outline-light btn-sm me-2" href="{{ url_for('game.host_dashboard') }}">Host</a>
+                    <a class="btn btn-outline-light btn-sm me-2" href="{{ url_for('settings.index') }}">API Keys</a>
                     <span class="navbar-text text-white me-2">{{ current_user.display_name }}</span>
                     <form method="POST" action="{{ url_for('auth.logout') }}" class="d-inline">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

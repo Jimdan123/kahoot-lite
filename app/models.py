@@ -30,6 +30,40 @@ class User(UserMixin, db.Model):
         return f'<User {self.email}>'
 
 
+class UserApiKey(db.Model):
+    """A user's own BYOK provider API key — lets their quiz-generation runs
+    draw from their own quota instead of the server's shared one (tried
+    first, server's own key(s) stay a fallback — see
+    app/ai/langgraph_flow/llm_utils.py's make_llm()). The unique constraint
+    gives upsert semantics: re-adding a key for a provider you've already
+    saved updates it in place rather than creating a duplicate row."""
+    __tablename__ = 'user_api_keys'
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'provider', name='uq_user_api_keys_user_provider'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    provider = db.Column(db.String(20), nullable=False)   # 'groq' | 'nvidia' | 'openrouter' | 'deepseek'
+    encrypted_key = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = db.relationship(
+        'User', backref=db.backref('api_keys', cascade='all, delete-orphan', lazy='dynamic'))
+
+    def set_key(self, plaintext: str) -> None:
+        from app.crypto_utils import encrypt
+        self.encrypted_key = encrypt(plaintext)
+
+    def get_key(self) -> str:
+        from app.crypto_utils import decrypt
+        return decrypt(self.encrypted_key)
+
+    def __repr__(self):
+        return f'<UserApiKey {self.provider} for user {self.user_id}>'
+
+
 class QuestionSet(db.Model):
     __tablename__ = 'question_sets'
 
@@ -38,6 +72,11 @@ class QuestionSet(db.Model):
     description = db.Column(db.Text)
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Total tokens (prompt + completion) the LangGraph pipeline used to
+    # generate this set — see PipelineState['token_usage'] and
+    # nodes/save.py. Null for manually-created sets and any set generated
+    # before this field existed.
+    total_tokens = db.Column(db.Integer)
 
     questions = db.relationship(
         'Question',

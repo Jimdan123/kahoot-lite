@@ -84,7 +84,13 @@ log = logging.getLogger('kahoot.ai')
 def _should_retry(state: PipelineState) -> str:
     validated = state.get('validated_questions') or []
     retries = state.get('retry_count', 0)
-    if len(validated) >= MIN_ACCEPTED_QUESTIONS or retries >= MAX_RETRIES:
+    if len(validated) >= MIN_ACCEPTED_QUESTIONS:
+        return 'save'
+    if retries >= MAX_RETRIES:
+        log.warning(f'run_pipeline: saving with only {len(validated)} accepted question(s), '
+                    f'below MIN_ACCEPTED_QUESTIONS={MIN_ACCEPTED_QUESTIONS}, after exhausting '
+                    f'{retries} retries — quota scaling in generate.py could not make up the '
+                    f'shortfall for this document')
         return 'save'
     # A failed attempt with a high closed-book leak rate gets one shot at
     # external WHY context before the plain retry — see nodes/enrich.py's
@@ -94,6 +100,25 @@ def _should_retry(state: PipelineState) -> str:
     if not state.get('search_context') and needs_enrichment(state):
         return 'enrich_then_retry'
     return 'retry'
+
+
+def _resolve_user_llm_keys(owner_id: int) -> dict:
+    """Query + decrypt this user's saved BYOK keys once per run (not once
+    per node — see PipelineState['user_llm_keys']). A row that fails to
+    decrypt (e.g. API_KEY_ENCRYPTION_KEY was rotated/lost since it was
+    saved) is logged and dropped rather than failing the whole run —
+    consistent with this pipeline's "one bad input doesn't kill the run"
+    philosophy elsewhere (generate.py/critic.py's per-item try/except)."""
+    from app.crypto_utils import DecryptionError
+    from app.models import UserApiKey
+    keys = {}
+    for row in UserApiKey.query.filter_by(user_id=owner_id).all():
+        try:
+            keys[row.provider] = row.get_key()
+        except DecryptionError as exc:
+            log.warning(f'run_pipeline: could not decrypt saved {row.provider} key for '
+                        f'user {owner_id} ({exc}); skipping it for this run')
+    return keys
 
 
 def _bump_retry(state: PipelineState) -> dict:
@@ -163,10 +188,11 @@ def run_pipeline(
     order of tens of seconds for a small PDF, minutes for a large one.
     Raises RuntimeError on any fatal state['error'].
     """
-    if which_provider() is None:
+    user_llm_keys = _resolve_user_llm_keys(owner_id)
+    if not user_llm_keys and which_provider() is None:
         raise RuntimeError(
             'No LLM API key configured. Set GROQ_API_KEY (free at '
-            'https://console.groq.com/keys).'
+            'https://console.groq.com/keys), or add your own key on the API Keys page.'
         )
     initial: PipelineState = {
         'pdf_path': pdf_path,
@@ -176,6 +202,8 @@ def run_pipeline(
         'practice_questions_per_difficulty': practice_questions_per_difficulty,
         'retry_count': 0,
         'progress_cb': progress_cb,
+        'user_llm_keys': user_llm_keys,
+        'token_usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
     }
     log.info(f'run_pipeline starting: pdf={pdf_path} owner={owner_id}')
     final = _graph().invoke(initial)

@@ -27,6 +27,11 @@ def _require_database_url():
 
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-only-change-me')
+    # Separate secret from SECRET_KEY on purpose — rotating a session-signing
+    # key and rotating a data-encryption key are different concerns with
+    # different blast radii (see app/crypto_utils.py). Used to encrypt
+    # user-saved BYOK provider API keys (app/models.py's UserApiKey) at rest.
+    API_KEY_ENCRYPTION_KEY = os.environ.get('API_KEY_ENCRYPTION_KEY', 'dev-only-change-me-too')
     SQLALCHEMY_DATABASE_URI = _require_database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     WTF_CSRF_ENABLED = True

@@ -18,10 +18,15 @@
                 <li><code>GROQ_API_KEY</code> — free at
                     <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Groq Console</a></li>
             </ul>
-            Add to <code>.env</code> (locally) or Render's Environment tab (deploy).
+            Add to <code>.env</code> (locally) or Render's Environment tab (deploy) — or add your
+            own key on the <a href="{{ url_for('settings.index') }}">API Keys</a> page.
         </div>
+        {% elif provider %}
+        <p class="text-muted small">
+            Using provider: <strong>{{ provider }}</strong>{% if user_has_keys %} — your saved key(s) are tried first{% endif %}
+        </p>
         {% else %}
-        <p class="text-muted small">Using provider: <strong>{{ provider }}</strong></p>
+        <p class="text-muted small">Using your own saved API key(s) — no server-wide key is configured.</p>
         {% endif %}
 
         <form method="POST" enctype="multipart/form-data" class="card p-4">

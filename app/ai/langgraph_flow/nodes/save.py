@@ -24,6 +24,7 @@ def save(state: PipelineState) -> dict:
         description=(state.get('quiz_description')
                      or 'Auto-generated from an uploaded PDF (please review).'),
         owner_id=state['owner_id'],
+        total_tokens=(state.get('token_usage') or {}).get('total_tokens'),
     )
     db.session.add(qs)
     db.session.flush()  # get qs.id

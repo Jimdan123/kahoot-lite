@@ -44,3 +44,7 @@ graphify-out/
 
 # gitnexus
 .gitnexus/
+
+# understand-anything (regenerable knowledge-graph cache for its dashboard)
+.ua/
+.understand-anything/
