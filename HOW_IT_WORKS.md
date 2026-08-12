@@ -81,7 +81,7 @@ The classic web pattern. Browser asks, server answers, connection closes.
 GET /quiz/                           ─────►
                                       routes.py picks the handler
                                      ◄─────  HTML page (Jinja template)
-POST /auth/login  {email, password}  ─────►
+POST /auth/login  {username, password}  ─────►
                                       set session cookie
                                      ◄─────  302 redirect to /
 ```
@@ -123,7 +123,7 @@ Two different identity models, on purpose. Kahoot works the same way.
 
 ### Host — logged-in account
 
-A **host** is a real user with an email and a password. They own question
+A **host** is a real user with a username and a password. They own question
 sets, create rooms, and drive the game. They authenticate via:
 
 1. Fill in login form → `POST /auth/login`
@@ -178,10 +178,10 @@ uploaded filenames).
 ```
 users                            question_sets                   questions
 ├─ id                            ├─ id                          ├─ id
-├─ email (unique)                ├─ name                        ├─ question_set_id ──► question_sets.id
+├─ username (unique)             ├─ name                        ├─ question_set_id ──► question_sets.id
 ├─ password_hash (bcrypt)        ├─ description                 ├─ position
-├─ display_name                  ├─ owner_id ──► users.id       ├─ text
-└─ created_at                    └─ created_at                  ├─ option_a, option_b, option_c, option_d
+└─ created_at                    ├─ owner_id ──► users.id       ├─ text
+                                 └─ created_at                  ├─ option_a, option_b, option_c, option_d
                                                                 ├─ correct_option ('A'|'B'|'C'|'D')
                                                                 └─ time_limit (seconds)
 ```

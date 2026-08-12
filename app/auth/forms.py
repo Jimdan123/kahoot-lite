@@ -16,7 +16,7 @@ class SignupForm(FlaskForm):
         validators=[
             DataRequired(),
             Length(min=3, max=20),
-            Regexp(r'^[A-Za-z0-9_]+$', message='Letters, numbers, and underscores only'),
+            Regexp(r'^[A-Za-z0-9_]+\Z', message='Letters, numbers, and underscores only'),
         ],
     )
     password = PasswordField('Password', validators=[DataRequired(), Length(min=6)])
