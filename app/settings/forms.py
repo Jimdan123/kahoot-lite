@@ -9,11 +9,22 @@ from app.ssrf_protection import SSRFError, validate_public_https_url
 # WTForms' SelectField rejects any value outside `choices` server-side by
 # default (validate_choice) — no custom validator needed to keep a bogus
 # provider out of the DB even if the client <select> is tampered with.
+# Base URL/default model for each of these live in
+# app/ai/langgraph_flow/config/providers.py — anything not on this list
+# still works via the "Add a Custom Provider" form below (arbitrary
+# OpenAI-compatible endpoint, user supplies the base URL/model directly).
 PROVIDER_CHOICES = [
     ('groq', 'Groq'),
     ('nvidia', 'NVIDIA NIM'),
     ('openrouter', 'OpenRouter'),
     ('deepseek', 'DeepSeek'),
+    ('openai', 'OpenAI'),
+    ('together', 'Together AI'),
+    ('mistral', 'Mistral'),
+    ('xai', 'xAI (Grok)'),
+    ('cerebras', 'Cerebras'),
+    ('fireworks', 'Fireworks AI'),
+    ('perplexity', 'Perplexity'),
 ]
 
 
@@ -24,7 +35,7 @@ class ApiKeyForm(FlaskForm):
 
 
 # A custom provider's label is stored in the same `provider` column as the
-# 4 known codes above (UserApiKey.provider) and reused as a literal URL
+# known codes above (UserApiKey.provider) and reused as a literal URL
 # path segment in the existing /settings/keys/<provider>/delete route — the
 # charset restriction below keeps that route working unmodified (Werkzeug's
 # default `string` converter rejects '/' in a path segment) and keeps
@@ -35,7 +46,7 @@ _LABEL_RE = re.compile(r'^[A-Za-z0-9 ._-]{1,50}$')
 
 class CustomProviderForm(FlaskForm):
     """Add a fully custom, arbitrary OpenAI-compatible provider — not
-    limited to the 4 known ones above. See
+    limited to the known ones above. See
     app/ai/langgraph_flow/llm_utils.py's make_llm(custom_providers=...)."""
     label = StringField('Label', validators=[DataRequired(), Length(min=1, max=50)])
     base_url = StringField('Base URL', validators=[DataRequired(), URL(require_tld=True), Length(max=500)])

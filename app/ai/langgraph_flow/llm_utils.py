@@ -8,26 +8,47 @@ import re
 import time
 
 from app.ai.langgraph_flow.config import (
+    CEREBRAS_API_BASE,
+    CEREBRAS_MODEL_CHAIN,
     DEEPSEEK_API_BASE,
     DEEPSEEK_MODEL_CHAIN,
+    FIREWORKS_API_BASE,
+    FIREWORKS_MODEL_CHAIN,
     GROQ_MODEL_CHAIN,
     LLM_MAX_TOKENS,
     LLM_TIMEOUT_SECONDS,
     LLM_TEMPERATURE,
+    MISTRAL_API_BASE,
+    MISTRAL_MODEL_CHAIN,
     NVIDIA_API_BASE,
     NVIDIA_MODEL_CHAIN,
+    OPENAI_API_BASE,
+    OPENAI_MODEL_CHAIN,
     OPENROUTER_API_BASE,
     OPENROUTER_MODEL_CHAIN,
+    PERPLEXITY_API_BASE,
+    PERPLEXITY_MODEL_CHAIN,
+    TOGETHER_API_BASE,
+    TOGETHER_MODEL_CHAIN,
+    XAI_API_BASE,
+    XAI_MODEL_CHAIN,
+    has_cerebras_fallback,
     has_deepseek_fallback,
+    has_fireworks_fallback,
+    has_mistral_fallback,
     has_nvidia_fallback,
+    has_openai_fallback,
     has_openrouter_fallback,
+    has_perplexity_fallback,
+    has_together_fallback,
+    has_xai_fallback,
     which_provider,
 )
 
 log = logging.getLogger('kahoot.ai')
 
-# Both NVIDIA NIM and OpenRouter are OpenAI-compatible endpoints — only the
-# base URL and API key env var differ, so they share one builder
+# Every provider below except Groq is an OpenAI-compatible endpoint — only
+# the base URL and API key env var differ, so they all share one builder
 # (_build_openai_compatible below). Groq gets its own builder since it uses
 # the dedicated ChatGroq client instead. Adding another OpenAI-compatible
 # fallback tier is a one-line addition to each of these two dicts — no new
@@ -36,12 +57,54 @@ _OPENAI_COMPATIBLE_PROVIDERS = {
     'nvidia': NVIDIA_API_BASE,
     'openrouter': OPENROUTER_API_BASE,
     'deepseek': DEEPSEEK_API_BASE,
+    'openai': OPENAI_API_BASE,
+    'together': TOGETHER_API_BASE,
+    'mistral': MISTRAL_API_BASE,
+    'xai': XAI_API_BASE,
+    'cerebras': CEREBRAS_API_BASE,
+    'fireworks': FIREWORKS_API_BASE,
+    'perplexity': PERPLEXITY_API_BASE,
 }
 _PROVIDER_API_KEY_ENV = {
     'nvidia': 'NVIDIA_API_KEY',
     'openrouter': 'OPENROUTER_API_KEY',
     'deepseek': 'DEEPSEEK_API_KEY',
+    'openai': 'OPENAI_API_KEY',
+    'together': 'TOGETHER_API_KEY',
+    'mistral': 'MISTRAL_API_KEY',
+    'xai': 'XAI_API_KEY',
+    'cerebras': 'CEREBRAS_API_KEY',
+    'fireworks': 'FIREWORKS_API_KEY',
+    'perplexity': 'PERPLEXITY_API_KEY',
 }
+
+_DEFAULT_MODEL_CHAINS = {
+    'groq': GROQ_MODEL_CHAIN, 'nvidia': NVIDIA_MODEL_CHAIN,
+    'openrouter': OPENROUTER_MODEL_CHAIN, 'deepseek': DEEPSEEK_MODEL_CHAIN,
+    'openai': OPENAI_MODEL_CHAIN, 'together': TOGETHER_MODEL_CHAIN,
+    'mistral': MISTRAL_MODEL_CHAIN, 'xai': XAI_MODEL_CHAIN,
+    'cerebras': CEREBRAS_MODEL_CHAIN, 'fireworks': FIREWORKS_MODEL_CHAIN,
+    'perplexity': PERPLEXITY_MODEL_CHAIN,
+}
+
+# BYOK priority order for known providers: the original 4 first (most
+# road-tested in this pipeline), then the 7 added later — no strong reason
+# to rank one over another beyond that history.
+_KNOWN_PROVIDER_ORDER = (
+    'groq', 'nvidia', 'openrouter', 'deepseek',
+    'openai', 'together', 'mistral', 'xai', 'cerebras', 'fireworks', 'perplexity',
+)
+
+# (provider, has_fallback_fn) pairs for the server's own optional chain —
+# Groq is handled separately in make_llm() since it also needs the
+# GROQ_MODEL single-override check the OpenAI-compatible tiers don't have.
+_SERVER_FALLBACK_CHECKS = (
+    ('nvidia', has_nvidia_fallback), ('openrouter', has_openrouter_fallback),
+    ('deepseek', has_deepseek_fallback), ('openai', has_openai_fallback),
+    ('together', has_together_fallback), ('mistral', has_mistral_fallback),
+    ('xai', has_xai_fallback), ('cerebras', has_cerebras_fallback),
+    ('fireworks', has_fireworks_fallback), ('perplexity', has_perplexity_fallback),
+)
 
 
 def _build_groq_client(model: str, temperature: float, timeout: float, api_key: str = None):
@@ -418,13 +481,13 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
 
     Effective chain, in priority order: custom providers (most deliberate,
     specific thing a user can configure — they typed a URL and picked a
-    model by hand) FIRST, then the 4 known-provider BYOK keys (priority
-    groq > nvidia > openrouter > deepseek, each expanded across that
-    provider's normal *_MODEL_CHAIN), then the server's own env-configured
-    chain (unchanged from before BYOK existed) as the final fallback. With
-    user_keys=None/{} and custom_providers=None/[] (every call site before
-    BYOK existed, and any user with no saved keys/providers), behavior is
-    byte-for-byte identical to before either parameter existed.
+    model by hand) FIRST, then the known-provider BYOK keys in
+    _KNOWN_PROVIDER_ORDER (each expanded across that provider's normal
+    *_MODEL_CHAIN), then the server's own env-configured chain (unchanged
+    from before BYOK existed) as the final fallback. With user_keys=None/{}
+    and custom_providers=None/[] (every call site before BYOK existed, and
+    any user with no saved keys/providers), behavior is byte-for-byte
+    identical to before either parameter existed.
 
     `model` pins one specific Groq model, bypassing rotation entirely (and
     both BYOK params — no current call site uses this, see the note below)
@@ -469,28 +532,21 @@ def make_llm(temperature: float = LLM_TEMPERATURE, model: str = None, timeout: f
     for entry in custom_providers:                                 # user's custom providers FIRST
         chain += [(entry['label'], m, entry['api_key'], entry['base_url']) for m in entry['models']]
 
-    default_chains = {'groq': GROQ_MODEL_CHAIN, 'nvidia': NVIDIA_MODEL_CHAIN,
-                       'openrouter': OPENROUTER_MODEL_CHAIN, 'deepseek': DEEPSEEK_MODEL_CHAIN}
-    for provider in ('groq', 'nvidia', 'openrouter', 'deepseek'):   # then user's known-provider keys
+    for provider in _KNOWN_PROVIDER_ORDER:                         # then user's known-provider keys
         key = user_keys.get(provider)
         if not key:
             continue
-        models = _resolve_chain(f'{provider.upper()}_MODEL_CHAIN', default_chains[provider])
+        models = _resolve_chain(f'{provider.upper()}_MODEL_CHAIN', _DEFAULT_MODEL_CHAINS[provider])
         chain += [(provider, m, key, None) for m in models]
 
     if server_provider == 'groq':                                  # then the server's chain, unchanged
         single_override = os.environ.get('GROQ_MODEL')
         groq_models = [single_override] if single_override else _resolve_chain('GROQ_MODEL_CHAIN', GROQ_MODEL_CHAIN)
         chain += [('groq', m, None, None) for m in groq_models]
-    if has_nvidia_fallback():
-        nvidia_models = _resolve_chain('NVIDIA_MODEL_CHAIN', NVIDIA_MODEL_CHAIN)
-        chain += [('nvidia', m, None, None) for m in nvidia_models]
-    if has_openrouter_fallback():
-        openrouter_models = _resolve_chain('OPENROUTER_MODEL_CHAIN', OPENROUTER_MODEL_CHAIN)
-        chain += [('openrouter', m, None, None) for m in openrouter_models]
-    if has_deepseek_fallback():
-        deepseek_models = _resolve_chain('DEEPSEEK_MODEL_CHAIN', DEEPSEEK_MODEL_CHAIN)
-        chain += [('deepseek', m, None, None) for m in deepseek_models]
+    for provider, has_fallback in _SERVER_FALLBACK_CHECKS:
+        if has_fallback():
+            models = _resolve_chain(f'{provider.upper()}_MODEL_CHAIN', _DEFAULT_MODEL_CHAINS[provider])
+            chain += [(provider, m, None, None) for m in models]
 
     return _RotatingLLM(chain, temperature, resolved_timeout)
 
