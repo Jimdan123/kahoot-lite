@@ -347,7 +347,27 @@ Multiple independent defenses. Each one only has to hold for its own thing.
   concerns. Production `create_app` refuses to boot if it isn't set, same
   as `SECRET_KEY`. If it's ever rotated, previously-saved keys just stop
   decrypting — that provider is dropped from the user's chain for future
-  runs (a warning is logged), not a crash.
+  runs (a warning is logged), not a crash. Covers both the 4 known
+  providers and fully custom ones — one table (`app/models.py`'s
+  `UserApiKey`), an `is_custom` column discriminates the two.
+- **SSRF protection for custom providers.** A custom BYOK provider stores a
+  user-supplied `base_url` that the server later makes real outbound HTTPS
+  requests to on every pipeline run — an open door to internal services or
+  cloud metadata endpoints if unchecked. `app/ssrf_protection.py`'s
+  `validate_public_https_url` requires `https://`, no embedded credentials,
+  the standard port (443), and a hostname that doesn't resolve (checking
+  every address, if it has multiple DNS records) to a
+  private/loopback/link-local/reserved/multicast address. Checked in two
+  places, not one: at save time (`CustomProviderForm.validate_base_url`)
+  and again immediately before each pipeline run actually uses the URL
+  (`graph.py`'s `_resolve_custom_providers`) — a save-time-only check has a
+  DNS-rebinding gap, where an attacker points the hostname at a public IP
+  to pass validation, then repoints its DNS record at an internal IP before
+  the pipeline runs. This narrows but doesn't fully close that gap (a
+  microsecond-scale TOCTOU window remains between the re-check and the
+  actual HTTP call) — judged sufficient given the threat model here
+  (authenticated users attacking their own server instance, not a
+  high-value multi-tenant target).
 
 ### Cross-Site Request Forgery (CSRF)
 
@@ -437,11 +457,16 @@ app/
 ├── __init__.py          Application factory. Wires extensions, blueprints,
 │                        security headers, ProxyFix, rate limiter, reaper.
 ├── extensions.py        Singleton instances (db, socketio, login_manager, csrf, limiter).
-├── models.py            SQLAlchemy models: User, QuestionSet, Question.
+├── models.py            SQLAlchemy models: User, QuestionSet, Question, UserApiKey.
+├── crypto_utils.py      Fernet encrypt/decrypt for saved BYOK API keys.
+├── ssrf_protection.py   validate_public_https_url() — guards custom BYOK base_urls.
 │
 ├── main/                Landing page (/).
 ├── auth/                Host signup / login / logout.
 ├── quiz/                Question set CRUD (host-facing).
+├── settings/            Host-facing API Keys page: save/delete a BYOK key for a
+│                        known provider, or add a fully custom OpenAI-compatible
+│                        endpoint (routes.py, forms.py).
 ├── game/                The live game itself:
 │   ├── routes.py            HTTP endpoints: /game/, /game/create/<id>,
 │   │                        /game/host/<pin>, /game/join, /game/play/<pin>
@@ -457,11 +482,17 @@ app/
 │   └── langgraph_flow/      The pipeline itself, one file per graph stage
 │       ├── graph.py             Node wiring + run_pipeline() entrypoint
 │       ├── state.py             PipelineState (the dict threaded through the graph)
-│       ├── config.py            Tunables + provider selection
-│       ├── llm_utils.py         Groq client construction
+│       ├── config/              Tunables + provider selection, split by concern:
+│       │                        providers.py, chunking.py, generation.py,
+│       │                        enrichment.py, topic_practice.py (re-exported
+│       │                        from config/__init__.py)
+│       ├── llm_utils.py         make_llm() — provider chain construction + rotation
+│       ├── glyph_resolver.py    Font-encoding-corrupted PDF chars → real characters
+│       ├── vision_utils.py      Narrowly-scoped vision calls: glyph/formula/figure
 │       ├── json_utils.py        LLM response → parsed JSON
 │       ├── progress.py          Progress-callback plumbing
-│       └── nodes/               extract, chunk, comprehend, generate, critic, save
+│       └── nodes/               extract, chunk, comprehend, enrich, practice,
+│                                generate, critic, save
 ├── templates/           Jinja2 templates, one folder per blueprint.
 └── static/              CSS + client-side JS.
 
@@ -514,13 +545,18 @@ Render runs:
 - The `GeventWebSocketWorker` upgrades HTTP requests to WebSocket cleanly
 - `-w 1` (one worker) — required because our room state lives in a per-process
   dict; multi-worker would need Redis for shared state
-- `--timeout 1800` (gunicorn's default is 30s) — the AI pipeline's
-  `extract_text` node has no page cap, so a large PDF (~100 pages) can spend
+- `--timeout 1800` (gunicorn's default is 30s) — generous headroom for the
+  AI pipeline's `extract_text` node, which has no page cap and can spend
   several minutes on sequential CPU-bound page rendering + vision-model
-  calls inside one background greenlet; gevent only yields on I/O, so
-  sustained CPU work there can miss gunicorn's own heartbeat and get the
-  worker killed mid-job otherwise — which wipes the in-memory job registry
-  (`app/ai/jobs.py`) a restarted worker can't recover
+  calls inside one background greenlet on a large PDF (~100 pages). Gevent
+  only yields on I/O, so sustained unyielded CPU work there can miss
+  gunicorn's own heartbeat and get the worker killed mid-job — which wipes
+  the in-memory job registry (`app/ai/jobs.py`) a restarted worker can't
+  recover. `extract_text` now cedes control explicitly with
+  `gevent.sleep(0.001)` yields between pages (see **Vision-assisted
+  extraction** in §12) precisely to avoid hitting this; the generous
+  timeout stays as defense in depth for a genuinely huge job, not as the
+  primary fix
 - `run:app` imports `run.py` and exposes the `app` object (the `if __name__
   == '__main__'` block never runs under gunicorn)
 
@@ -627,6 +663,10 @@ loop or save.
    LLM to transcribe each page image; dropped after testing against a real
    scanned textbook found it both hit Groq's free-tier rate limit almost
    immediately and occasionally hallucinated text that wasn't in the image.)
+   Beyond plain extraction, this stage also closes four gaps plain
+   `pdfplumber.extract_text()` leaves open — corrupted math-font glyphs, 2D
+   formulas, embedded figures/diagrams, and tables — see **Vision-assisted
+   extraction** below.
 2. **chunk_by_topic** (`nodes/chunk.py`) — split by ~500 words. Drop chunks
    with fewer than 40 words (too thin to reason about).
 3. **comprehend_chunks** (`nodes/comprehend.py`) — per chunk, call the LLM
@@ -673,7 +713,8 @@ loop or save.
    opposite intent of `generate_questions`' two-hop rule). How many of each
    difficulty is **chosen by the host on the upload form**
    (`practice_count`, 1-5, defaulting to `PRACTICE_QUESTIONS_PER_DIFFICULTY`
-   in `config.py`) and flows through as `state['practice_questions_per_difficulty']`.
+   in `config/topic_practice.py`) and flows through as
+   `state['practice_questions_per_difficulty']`.
    If the document already has its own exercises (from `existing_exercises`
    above), the prompt requires genuinely new problems, not reworded copies.
    Additive and best-effort: any failure here yields an empty list rather
@@ -742,6 +783,119 @@ calls of a plain "chunk → generate → grade" version (one comprehension call
 and one closed-book call per chunk, on top of generate/quality), in exchange
 for meaningfully harder, less-guessable questions.
 
+### Vision-assisted extraction
+
+Four gaps in plain-text PDF extraction, all closed inside `extract_text`
+before the pipeline ever sees the page's text:
+
+**1. Corrupted glyphs** (`glyph_resolver.py`). LaTeX/Beamer-generated PDFs
+often embed math fonts (Computer Modern: CMR10, CMBX10, CMMI10, CMMIB10,
+CMSY10, CMEX10, ...) with no `ToUnicode` CMap, so pdfplumber extracts the
+font's raw internal glyph-slot code instead of a real character — e.g. one
+font's codepoint 3 renders as Λ while a *different* font's codepoint 3
+means something else entirely, so resolution is always keyed on
+`(font, codepoint)` together, never codepoint alone (verified live against
+a real Strang linear-algebra slide deck). Three layers, in order:
+   1. `glyph_cache.json` — a static per-font-per-codepoint lookup, seeded
+      only with entries actually verified by cropping and visually
+      inspecting the glyph, never guessed from memory.
+   2. Vision fallback (`vision_utils.describe_glyph`) — only on a cache
+      miss: crops just that character's bounding box, asks a
+      narrowly-scoped question, and appends the answer back into the cache
+      so the same font/glyph combo showing up in a completely different
+      document never needs a repeat vision call.
+   3. Placeholder (`[unrecognized symbol]`) — if vision is unavailable
+      (`OPENROUTER_API_KEY` unset) or the call itself fails, an honest
+      marker rather than silent deletion (corrupts meaning) or leaving the
+      raw control character (breaks JSON downstream).
+
+   One boundary this can't cross: a `sqrt()` radical visible on the page
+   was found (same slide deck) to have no corresponding object anywhere in
+   `page.chars`, `page.curves`, `page.lines`, or `page.rects` — some PDF
+   generators draw certain symbols in a way pdfplumber's object model
+   doesn't capture at all, which no character-level fix can recover.
+
+**2. 2D formulas.** Even with every glyph correctly resolved, a genuinely
+2D region (a matrix, a multi-line derivation) can still lose meaning when
+linearized left-to-right. Characters from math-symbol fonts are clustered
+by spatial proximity (a pragmatic proximity heuristic, not a real layout
+algorithm); a cluster of 3+ gets cropped and sent to
+`vision_utils.transcribe_formula`, which returns a linear, plain-ASCII
+transcription (e.g. `sqrt(A^T A)`, `2H2 + O2 -> 2H2O`) capped to never
+cover more than half the page's area (`_MAX_REGION_AREA_FRACTION`), so a
+slide with many small, scattered formulas doesn't get treated as "one
+formula".
+
+**3. Figures and diagrams.** Embedded raster images above a calibrated
+minimum area (`MIN_FIGURE_AREA`, tuned against real calibration PDFs to
+sit between genuine figures and decorative icons/bullets) get a factual
+1-3 sentence description via `vision_utils.describe_figure`. The same
+treatment applies to diagrams drawn as PDF vector primitives rather than
+raster images (chemistry structures, circuit diagrams) — `page.curves`/
+`page.lines`/stroked `page.rects` are clustered the same way. Both skip
+any image/shape size that repeats across `TEMPLATE_REPEAT_THRESHOLD`+
+pages of the same document (a slide deck's logo bar), so a template
+graphic never burns a vision call or clutters the comprehension record.
+
+**4. Tables.** `page.find_tables()` (pdfplumber's dedicated table-structure
+API, unused by plain `extract_text()`) reformats detected tables as
+Markdown, and that region is excluded from the plain-text pass so the same
+content doesn't appear twice in two different (one scrambled) forms.
+
+Every vision call above is bounded to one small cropped region, never a
+full page — the same lesson that killed the earlier Groq-vision-OCR
+fallback (node 1 above): a tiny cropped glyph/formula/figure is a much
+smaller, much less open-ended request than "transcribe this whole page",
+so both the rate-limit and hallucination failure modes are far less
+exposed. All four gap-fillers reuse OpenRouter (`vision_utils.py`) — the
+same provider already integrated as the text pipeline's tier-3 fallback —
+with a free vision-capable model (`VISION_MODEL`, overridable via env var)
+rather than a new provider/credential just for vision. Every one is a
+no-op (`has_vision() == False`) if `OPENROUTER_API_KEY` isn't set, the
+same optional-tier convention as every other extra in this pipeline.
+
+**Circuit breaker for exhausted vision quota.** Without one, a
+formula/figure-heavy document that exhausts OpenRouter's shared free-tier
+vision quota mid-run would keep re-attempting the identical failed call
+for every remaining occurrence — found live against a real 121-page,
+formula-heavy math PDF: 568 corrupted glyphs, every one re-attempting a
+call already known to 429, at ~2s per wasted round trip. `vision_utils.py`
+mirrors `llm_utils.py`'s `_exhausted_until` pattern: the first
+`RateLimitError` parses OpenRouter's actual reset timestamp (falling back
+to a conservative 1-hour pause if the response doesn't carry a parseable
+one) and disables `has_vision()` process-wide until then, so every other
+glyph/formula/figure lookup for the rest of the run skips straight to a
+placeholder instead of hammering a known-dead endpoint. Verified live: the
+same 121-page PDF that was on track for 15-20+ minutes finished extraction
+in 6.0 seconds once this landed.
+
+**Staying responsive under gevent.** `extract_text` runs inside the single
+gevent worker shared with every other request this process serves (live
+games, WebSocket pings — see §11). Its per-page work (PDF parsing, image
+rendering, shape clustering) is CPU-bound with no I/O of its own to yield
+on, so without an explicit yield it can starve the event loop for the
+whole page loop's duration. The actual root cause of this app's
+`CRITICAL WORKER TIMEOUT` crashes on large PDFs: pdfplumber/pdfminer
+lazily parses a page's *entire* object model (images, chars, curves,
+lines, rects together) on first access to *any* of them, and
+`_find_template_image_sizes`'s unconditional `page.images` access — called
+first thing, before any yield existed anywhere in this file — was that
+first access for every page of every upload. Measured live: 2.4-3.3s of
+continuous, unyielded parsing across just 5 pages of a synthetic
+chart-heavy test document, with zero gevent scheduling opportunities for
+any other traffic that whole span. Fixed with a `gevent.sleep(0.001)`
+yield right before that first-touch (plus the same yield in the main
+per-page loop and in `_find_template_shape_sizes`, the latter now also
+gated behind `has_vision()` since its output has no other consumer).
+Confirmed `gevent.sleep(0)` does **not** work — it only hands off to
+greenlets already ready at that exact instant, not timer-scheduled ones;
+it needs an actual positive duration to cede control to the hub. Verified
+with a gevent heartbeat harness: max single starvation window dropped
+from 2.4-3.3s (one unbroken block) to 0.51s (5 separate windows, each
+giving other traffic a real scheduling chance in between). Locked down by
+`tests/test_extract_gevent_yield.py` — deterministic, not
+wall-clock-timing-flaky (see §13).
+
 ### Async execution
 
 The pipeline takes 20-60 seconds — too long to hold an HTTP request open
@@ -749,8 +903,8 @@ on Render's free tier (which caps requests at 30s). So:
 
 The upload form (`templates/ai/upload.html`) also lets the host pick how
 many EASY/MEDIUM/HARD practice questions to generate (1-5 each, default
-`PRACTICE_QUESTIONS_PER_DIFFICULTY` from `config.py`) via a `practice_count`
-field — `routes.py` clamps it to
+`PRACTICE_QUESTIONS_PER_DIFFICULTY` from `config/topic_practice.py`) via a
+`practice_count` field — `routes.py` clamps it to
 `[MIN_PRACTICE_QUESTIONS_PER_DIFFICULTY, MAX_PRACTICE_QUESTIONS_PER_DIFFICULTY]`
 before it ever reaches the pipeline, so a tampered or malformed form value
 can't blow up the LLM call.
@@ -798,26 +952,66 @@ Upload is behind the same layered defenses as the rest of the app, plus:
 
 ### LLM provider
 
-The pipeline needs `GROQ_API_KEY` to run at all — `which_provider()` returns
-`None` and `run_pipeline` raises `RuntimeError` early if it isn't set, so the
-`_worker` surfaces a clean error via `jobs.mark_failed` instead of a 500.
-Groq's free tier needs no credit card (get a key at
-https://console.groq.com/keys).
+The pipeline needs *some* working provider to run: either the server's own
+`GROQ_API_KEY`, or the signed-in user's own BYOK key(s)/custom provider(s)
+saved on the API Keys page (see below). If neither exists, `run_pipeline`
+raises `RuntimeError` early, so `_worker` surfaces a clean error via
+`jobs.mark_failed` instead of a 500. Groq's free tier needs no credit card
+(get a key at https://console.groq.com/keys).
 
-Beyond that single required key, `make_llm()` (`llm_utils.py`) builds a
-**4-tier fallback chain**, each tier optional beyond the first:
+**User-facing text never names the underlying vendor/model.** Fixed
+2026-08-12: the upload page used to show "Using provider: groq" to every
+signed-in user, the live progress bar said "Connecting to Groq…", and
+several error messages named Groq/`GROQ_API_KEY` directly. Which
+vendor/model powers the app isn't something to reveal to regular users —
+just whether generation is available, and whose key is being used (the
+server's or the user's own). Server logs, code comments, and
+operator-facing setup docs (`.env.example`, `README.md`, this doc) are
+unaffected — an operator configuring their own deployment still needs the
+real env var name.
+
+Beyond the server's own key, `make_llm()` (`llm_utils.py`) builds a
+**4-tier fallback chain** of known providers, each tier optional beyond
+Groq:
 
 | Tier | Env var | Client | Default models |
 |---|---|---|---|
-| 1. Groq (required) | `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile`, `qwen/qwen3.6-27b` |
+| 1. Groq | `GROQ_API_KEY` | `ChatGroq` | `llama-3.3-70b-versatile`, `qwen/qwen3.6-27b` |
 | 2. NVIDIA NIM (optional) | `NVIDIA_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `nvidia/llama-3.3-nemotron-super-49b-v1`, `meta/llama-3.1-8b-instruct` |
 | 3. OpenRouter (optional) | `OPENROUTER_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `openai/gpt-oss-20b:free`, `nvidia/nemotron-3-nano-30b-a3b:free`, `inclusionai/ling-3.0-flash:free` |
 | 4. DeepSeek (optional) | `DEEPSEEK_API_KEY` | `ChatOpenAI` (OpenAI-compatible) | `deepseek-v4-flash` |
 
-A tier is skipped entirely if its API key isn't set — only `GROQ_API_KEY` is
-required. Every `*_MODEL_CHAIN` in `config.py` can be overridden via the
-matching env var (comma-separated) without a code change; a single Groq
-model can also be pinned with `GROQ_MODEL`.
+A tier is skipped entirely if its API key isn't set. Every `*_MODEL_CHAIN`
+(now in `config/providers.py`, part of the `config/` package —
+`chunking.py`/`enrichment.py`/`generation.py`/`topic_practice.py` split
+out the other tunables by concern, all re-exported from
+`config/__init__.py` so existing `from ...config import X` call sites are
+unaffected) can be overridden via the matching env var (comma-separated)
+without a code change; a single Groq model can also be pinned with
+`GROQ_MODEL`.
+
+**BYOK: known providers + fully custom ones.** On the Settings → API Keys
+page, a signed-in host can save their own key for any of the 4 providers
+above, *or* add a fully custom OpenAI-compatible endpoint — label + base
+URL + one or more comma-separated model names + key
+(`app/settings/forms.py`'s `CustomProviderForm`; one `UserApiKey` table
+with an `is_custom` discriminator; `app/settings/routes.py`). Effective
+chain priority in `make_llm()`: **custom providers first** (the most
+deliberate, specific thing a user can configure — they typed a URL and
+picked a model by hand), **then the user's known-provider BYOK keys**
+(priority groq > nvidia > openrouter > deepseek, each expanded across that
+provider's normal model chain), **then the server's own chain** as final
+fallback. Chain entries are `(provider, model, api_key, base_url)`
+4-tuples — `base_url` is `None` for one of the 4 known providers (routed
+through the existing provider-name lookup) or a URL string for a custom
+entry (built via a dedicated client builder that always uses the given
+key, never falling back to any server-side env var). With no saved
+keys/providers, behavior is byte-for-byte identical to before BYOK
+existed.
+
+A custom provider's `base_url` is server-side SSRF surface — see **SSRF
+protection for custom providers** in §8 for how it's validated (both at
+save time and again immediately before each pipeline run).
 
 Check https://console.groq.com/docs/models (and the NVIDIA/OpenRouter
 catalogs) before changing a default — model lineups turn over, and a
@@ -826,13 +1020,18 @@ model once did here (404, "no longer available").
 
 Scanned-PDF OCR does not go through any of these — it runs on local
 Tesseract (`pytesseract`, see the `extract_text` node above), so it has no
-LLM provider, model, or rate limit of its own.
+LLM provider, model, or rate limit of its own. The vision calls in
+**Vision-assisted extraction** above are a separate path too — always
+OpenRouter, gated on `OPENROUTER_API_KEY` specifically, not part of this
+text-model chain.
 
 ### Model rotation & fallback
 
 `_RotatingLLM` (`llm_utils.py`) is what every node's `llm = make_llm()`
 actually returns (unless it's the only tier configured, in which case it's
-just a plain `ChatGroq`). It walks the 4-tier chain above and rotates past
+just a plain `ChatGroq`). It walks the effective chain built by
+`make_llm()` — custom providers, then known-provider BYOK keys, then the
+server's own 4-tier chain, see **LLM provider** above — and rotates past
 an entry for two different reasons, handled two different ways:
 
 1. **The provider itself is unavailable** — rate limit / daily quota
@@ -850,9 +1049,15 @@ an entry for two different reasons, handled two different ways:
    re-hit an exhausted model on every single chunk. A fresh node still
    starts a fresh `make_llm()` back at the front of the chain, since
    per-minute limits may have reset by then — but a **process-wide cache**
-   (`_exhausted_until`, keyed by `(provider, model)`) remembers a
-   `RateLimitError`'s own reported "try again in Xh Ym Z.zs" wait time and
-   skips that entry with no HTTP call at all until it elapses, so a
+   (`_exhausted_until`, keyed by `(provider, model, key_fingerprint,
+   base_url)` — the fingerprint, a truncated SHA-256 of the API key, never
+   reversible, keeps one user's rate-limit exhaustion from poisoning this
+   cache for a different user or the server hitting the same
+   `(provider, model)` with a different key; `base_url` keeps two custom
+   entries that happen to reuse the same label from colliding if they
+   point at different URLs) remembers a `RateLimitError`'s own reported
+   "try again in Xh Ym Z.zs" wait time and skips that entry with no HTTP
+   call at all until it elapses, so a
    *daily*-quota outage (which won't have cleared by the next node) doesn't
    cost one wasted round trip per node for the rest of the day. The very
    last remaining entry in any given rotation is always attempted for
@@ -987,3 +1192,10 @@ BASE=http://localhost:5001 python tests/test_security.py
 ```
 
 Details in `tests/README.md`.
+
+Separately, `tests/test_extract_gevent_yield.py` is a deterministic
+(no wall-clock timing) unit-level regression test locking down the
+`extract_text` cooperative-yield fix and its `has_vision()` gating — see
+§12's **Vision-assisted extraction**. It doesn't drive a running server
+like the four suites above, so it runs the normal pytest way instead:
+`pytest tests/test_extract_gevent_yield.py -v`.
