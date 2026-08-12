@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 
+import gevent
 import pdfplumber
 import pytesseract
 from pdfplumber.utils import get_bbox_overlap
@@ -94,9 +95,37 @@ def extract_text(state: PipelineState) -> dict:
             n_vector_figures = 0
             n_tables = 0
             template_sizes = _find_template_image_sizes(pdf.pages)
-            template_shape_sizes = _find_template_shape_sizes(pdf.pages)
+            # Gated behind has_vision(): the only consumer of this data is
+            # _vector_figure_annotations, itself a no-op without vision, so
+            # computing it otherwise would force pdfplumber to parse every
+            # page's curves/lines/rects (real, measured CPU cost — see
+            # _diagram_candidate_bboxes's docstring) for nothing. Unlike
+            # _find_template_image_sizes above (page.images was already
+            # accessed elsewhere pre-existing this feature; no new cost).
+            from app.ai.langgraph_flow.vision_utils import has_vision
+            template_shape_sizes = _find_template_shape_sizes(pdf.pages) if has_vision() else set()
 
             for page in pdf.pages:
+                # Cooperative yield: extract_text() runs inside a single
+                # gevent worker shared with all other traffic (live games,
+                # WebSocket pings). Per-page work here is CPU-bound (PDF
+                # parsing, image rendering, shape clustering) with no I/O of
+                # its own to yield on, so without an explicit yield a
+                # figure/formula/diagram-heavy document can starve the event
+                # loop for the page loop's entire duration — see
+                # Dockerfile's --timeout comment and this bug's diagnosis
+                # (measured: one continuous 2.4s starvation window on a
+                # 5-page synthetic test document, zero yields, before this
+                # fix). MUST be a small positive duration, not
+                # gevent.sleep(0) — verified live: sleep(0) only hands off to
+                # greenlets already ready at that exact instant, so a
+                # timer-scheduled greenlet (e.g. another request's periodic
+                # wait) that isn't ready yet never actually gets to run; a
+                # tiny positive sleep unconditionally cedes control to the
+                # hub for that long, which is what actually lets other
+                # greenlets progress.
+                gevent.sleep(0.001)
+
                 n_corrupted, resolved_chars = resolve_page_glyphs(page)
                 n_glyphs_resolved += n_corrupted
 
@@ -161,10 +190,30 @@ def extract_text(state: PipelineState) -> dict:
 
 def _find_template_image_sizes(pages) -> set[tuple[int, int]]:
     """Pre-scan: (width, height) sizes appearing on >= TEMPLATE_REPEAT_THRESHOLD
-    pages, across the whole document — see TEMPLATE_REPEAT_THRESHOLD."""
+    pages, across the whole document — see TEMPLATE_REPEAT_THRESHOLD.
+
+    The gevent.sleep(0.001) below is the real fix for this pipeline's
+    WORKER TIMEOUT crashes (diagnosed 2026-08-12), not the yields added
+    elsewhere in this file: pdfplumber/pdfminer lazily parses a page's
+    full object model (images, chars, curves, lines, rects together) on
+    FIRST access to ANY of them, and this loop's `page.images` access —
+    called here, unconditionally, before anything else in extract_text()
+    — is that first access for every page of every uploaded PDF. Measured
+    live: 2.4s of continuous, unyielded parsing across just 5 pages of a
+    synthetic chart-heavy test document, with ZERO gevent scheduling
+    opportunities for any other traffic (other users' live games,
+    WebSocket pings) for that entire span — confirmed by instrumenting
+    yields elsewhere in this file (extract_text()'s main loop,
+    _find_template_shape_sizes) and finding they fired too late: by the
+    time those run, this function has already forced the parse for every
+    page, so their own per-page cost measures as near-zero. Must be a
+    small positive duration, not gevent.sleep(0) — see extract_text()'s
+    per-page yield comment for why sleep(0) alone doesn't actually cede
+    control to other greenlets."""
     from collections import Counter
     counts = Counter()
     for page in pages:
+        gevent.sleep(0.001)
         seen_this_page = set()
         for im in page.images:
             size = (round(im['width']), round(im['height']))
@@ -254,6 +303,11 @@ def _find_template_shape_sizes(pages) -> set[tuple[int, int]]:
     from collections import Counter
     counts = Counter()
     for page in pages:
+        # Cheap by the time this runs — _find_template_image_sizes above
+        # already forced the full per-page parse (see its docstring for
+        # why); kept for defense in depth on a document shape where that
+        # ordering assumption ever stops holding.
+        gevent.sleep(0.001)
         shapes = page.curves + page.lines + _stroked_rects(page.rects)
         seen_this_page = set()
         for cluster in _cluster_shapes(shapes, _SHAPE_CLUSTER_Y_GAP, _SHAPE_CLUSTER_X_GAP):
