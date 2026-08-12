@@ -101,6 +101,25 @@ def create_app(config_name='default'):
         db.session.execute(text(
             'ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS model_name TEXT'
         ))
+        # Username-only auth: `email`/`display_name` are gone from the model.
+        # `username` is added nullable at the DB level (unlike the model's
+        # nullable=False) because ALTER TABLE ADD COLUMN can't add a NOT NULL
+        # column with no default to a table that already has rows on Render —
+        # existing rows end up as harmless orphans with username IS NULL,
+        # unable to log in. New signups always set it, so app-level code
+        # never sees a null username.
+        db.session.execute(text(
+            'ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(20)'
+        ))
+        db.session.execute(text(
+            'CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE users DROP COLUMN IF EXISTS email'
+        ))
+        db.session.execute(text(
+            'ALTER TABLE users DROP COLUMN IF EXISTS display_name'
+        ))
         db.session.commit()
 
         import sys
