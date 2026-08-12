@@ -151,6 +151,24 @@ guessing the nickname doesn't have the token, so they can't impersonate.
 
 The token lives in the player's `localStorage`, keyed by `pin + nickname`.
 
+**The QR code/"copy link" convenience path doesn't use the PIN.** Each
+`Room` (`game_service.py`) also gets a `qr_token` — a separate
+`secrets.token_urlsafe(16)` value, unrelated to the pin — generated
+alongside it. `/game/host/<pin>`'s QR code and displayed join link encode
+this token, not the pin, via a dedicated `/game/join/<token>` route that
+looks the room up and renders the join form with the pin prefilled
+server-side — the pin never appears in that URL at any point (not even via
+a redirect). Rationale: the pin is a 6-digit human-typeable code, fine for
+reading aloud/manual entry, but putting it directly into a shareable URL
+would mean that URL is just a guessable number sitting in a browser
+address bar, history, and server access logs — a leaked/forwarded link
+would reduce joining to "read the screen" the same way a direct pin
+would. Both the pin and the token are generated with `secrets` (not the
+plain `random` module — a fix made 2026-08 alongside this, since `random`
+is a predictable, non-cryptographic PRNG and this app already uses
+`secrets` elsewhere for security-sensitive randomness like job IDs and
+uploaded filenames).
+
 ---
 
 ## 4. Data model: what's in the database, what's in RAM

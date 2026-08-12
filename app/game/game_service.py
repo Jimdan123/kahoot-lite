@@ -5,7 +5,7 @@ Room state is kept in a plain Python dict — perfectly fine for a single-proces
 dev/demo deployment. If we ever scale to multiple workers we would need to move
 this state to Redis (see RESOURCES.md for the sticky-sessions discussion).
 """
-import random
+import secrets
 import string
 import time
 from dataclasses import dataclass, field
@@ -39,6 +39,16 @@ class Room:
     question_set_id: int
     owner_id: int  # id of the User who created the room; only they can host
     questions: List[dict]
+    # High-entropy token for the QR code / "copy link" convenience join path
+    # — deliberately NOT the pin. The pin is a 6-digit human-typeable code
+    # (verbally readable, shown big on the host's screen); putting it
+    # straight into a shareable URL means the URL itself is just a
+    # guessable 6-digit number sitting in the browser address bar/history/
+    # server logs. This token is unrelated to the pin and effectively
+    # unguessable, so a leaked/forwarded link doesn't reduce join-guessing
+    # to "read the screen" the way a pin-bearing URL would. Multi-use for
+    # the room's lifetime, same as the pin — many players join off one QR.
+    qr_token: str = ''
     host_sid: Optional[str] = None
     # Active sockets keyed by socket id.
     players: Dict[str, Player] = field(default_factory=dict)
@@ -100,12 +110,19 @@ class Room:
 
 
 _rooms: Dict[str, Room] = {}
+# Reverse index: qr_token -> pin, for O(1) lookup from the QR/direct-link
+# join path without scanning every room. Kept in sync by create_room/
+# delete_room/sweep_stale_rooms — never write to this directly.
+_rooms_by_token: Dict[str, str] = {}
 
 
 def create_room(question_set_id: int, owner_id: int, questions: List[dict]) -> Room:
     pin = _generate_unique_pin()
-    room = Room(pin=pin, question_set_id=question_set_id, owner_id=owner_id, questions=questions)
+    qr_token = _generate_unique_qr_token()
+    room = Room(pin=pin, question_set_id=question_set_id, owner_id=owner_id,
+                questions=questions, qr_token=qr_token)
     _rooms[pin] = room
+    _rooms_by_token[qr_token] = pin
     return room
 
 
@@ -113,8 +130,15 @@ def get_room(pin: str) -> Optional[Room]:
     return _rooms.get(pin)
 
 
+def get_room_by_token(qr_token: str) -> Optional[Room]:
+    pin = _rooms_by_token.get(qr_token)
+    return _rooms.get(pin) if pin else None
+
+
 def delete_room(pin: str) -> None:
-    _rooms.pop(pin, None)
+    room = _rooms.pop(pin, None)
+    if room is not None:
+        _rooms_by_token.pop(room.qr_token, None)
 
 
 def all_rooms() -> Dict[str, Room]:
@@ -136,7 +160,9 @@ def sweep_stale_rooms(now: Optional[float] = None) -> int:
         elif now - room.last_activity > MAX_IDLE_SECONDS:
             stale.append(pin)
     for pin in stale:
-        _rooms.pop(pin, None)
+        room = _rooms.pop(pin, None)
+        if room is not None:
+            _rooms_by_token.pop(room.qr_token, None)
     return len(stale)
 
 
@@ -151,10 +177,22 @@ def reaper_loop(socketio) -> None:
 
 
 def _generate_unique_pin() -> str:
+    # secrets.choice, not random.choice — this app already uses `secrets`
+    # elsewhere for security-sensitive randomness (job IDs, uploaded
+    # filenames); the pin gates room access the same way, so it should use
+    # the same non-predictable source rather than the plain `random` module
+    # (Mersenne Twister — reconstructible from enough observed output).
     while True:
-        pin = ''.join(random.choices(string.digits, k=6))
+        pin = ''.join(secrets.choice(string.digits) for _ in range(6))
         if pin not in _rooms:
             return pin
+
+
+def _generate_unique_qr_token() -> str:
+    while True:
+        token = secrets.token_urlsafe(16)
+        if token not in _rooms_by_token:
+            return token
 
 
 def calculate_score(is_correct: bool, time_taken: float, time_limit: float) -> int:
