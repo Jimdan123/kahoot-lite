@@ -37,6 +37,6 @@ mlflow-skinny>=2.16.0
 cryptography>=42.0.0
 
 # Dev tools
-ruff>=0.6.0
+ruff>=0.16.2
 pytest>=8.0.0                 # tests/test_extract_shapes.py, tests/test_chunk_segments.py —
                                # pure geometry/string unit tests, no DB/Flask context needed
