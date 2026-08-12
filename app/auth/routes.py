@@ -30,18 +30,18 @@ def signup():
         return redirect(url_for('main.index'))
     form = SignupForm()
     if form.validate_on_submit():
-        user = User(email=form.email.data.lower(), display_name=form.display_name.data)
+        user = User(username=form.username.data.lower())
         user.set_password(form.password.data)
         db.session.add(user)
         try:
             db.session.commit()
         except IntegrityError:
-            # Narrow race: two signups for the same email passed the
+            # Narrow race: two signups for the same username passed the
             # pre-commit uniqueness check before either committed. The DB's
             # unique constraint is the real guard; turn its failure into the
             # same friendly message instead of a 500.
             db.session.rollback()
-            flash('Email already registered', 'danger')
+            flash('Username already taken', 'danger')
             return render_template('auth/signup.html', form=form)
         login_user(user)
         flash('Welcome! Your account is ready.', 'success')
@@ -56,14 +56,14 @@ def login():
         return redirect(url_for('main.index'))
     form = LoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(email=form.email.data.lower()).first()
+        user = User.query.filter_by(username=form.username.data.lower()).first()
         if user and user.check_password(form.password.data):
             login_user(user)
             next_page = request.args.get('next')
             if not _is_safe_next(next_page):
                 next_page = url_for('main.index')
             return redirect(next_page)
-        flash('Invalid email or password', 'danger')
+        flash('Invalid username or password', 'danger')
     return render_template('auth/login.html', form=form)
 
 
