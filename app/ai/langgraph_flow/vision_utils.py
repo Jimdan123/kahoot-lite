@@ -20,10 +20,14 @@ as every other optional tier in this pipeline.
 from __future__ import annotations
 
 import base64
+import logging
 import os
+import time
 
 from app.ai.langgraph_flow.config import LLM_TIMEOUT_SECONDS, OPENROUTER_API_BASE
 from app.ai.langgraph_flow.json_utils import content_to_text
+
+log = logging.getLogger('kahoot.ai')
 
 # Free, vision-capable model on OpenRouter's free collection — confirmed
 # by querying https://openrouter.ai/api/v1/models directly and filtering
@@ -42,8 +46,54 @@ DEFAULT_VISION_MODEL = 'nvidia/nemotron-nano-12b-v2-vl:free'
 VISION_MODEL = os.environ.get('VISION_MODEL', DEFAULT_VISION_MODEL)
 
 
+# Process-wide circuit breaker, mirrors llm_utils.py's _exhausted_until
+# pattern for the text-model chain. Found live 2026-08-12 against a
+# 121-page, formula-heavy math PDF: without this, once OpenRouter's free
+# vision tier's DAILY quota (shared across every glyph/formula/figure call
+# in this app, see this module's docstring) hits zero, every single
+# remaining corrupted glyph on every remaining page re-attempts the exact
+# same doomed API call (confirmed: the same handful of glyph codepoints —
+# summation signs, big parentheses, etc. — recur across dozens of pages,
+# each occurrence burning a ~2s round trip against an endpoint already
+# known to return 429). A daily-quota exhaustion doesn't self-heal within
+# a run the way a per-minute limit would, so there's no reason to keep
+# trying once we've seen it once.
+_vision_exhausted_until: float = 0.0
+
+
+def _is_vision_exhausted() -> bool:
+    return time.time() < _vision_exhausted_until
+
+
+def _mark_vision_exhausted(exc: Exception) -> None:
+    """Cache 'vision is out of quota until timestamp T' on any RateLimitError
+    — never for other failures (a single bad crop, a transient timeout
+    shouldn't disable vision for every remaining glyph on every remaining
+    page just because ONE call happened to fail)."""
+    global _vision_exhausted_until
+    import openai
+    if not isinstance(exc, openai.RateLimitError):
+        return
+    reset_ms = None
+    try:
+        reset_ms = int(exc.body['error']['metadata']['headers']['X-RateLimit-Reset'])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        pass
+    # If the provider's response doesn't carry a parseable reset time (a
+    # different error shape, a future API change), fall back to a
+    # conservative 1-hour pause rather than not backing off at all — same
+    # "reasonable fallback when we can't perfectly parse the wait time"
+    # spirit as llm_utils.py's _parse_retry_after 30s no-match default.
+    until = reset_ms / 1000.0 if reset_ms is not None else time.time() + 3600
+    if until > _vision_exhausted_until:
+        _vision_exhausted_until = until
+        log.warning(f'vision_utils: OpenRouter vision quota exhausted, disabling vision for the '
+                    f'next {until - time.time():.0f}s — remaining glyph/formula/figure lookups '
+                    f'this run will use placeholders instead of retrying a known-dead endpoint')
+
+
 def has_vision() -> bool:
-    return bool(os.environ.get('OPENROUTER_API_KEY'))
+    return bool(os.environ.get('OPENROUTER_API_KEY')) and not _is_vision_exhausted()
 
 
 def _vision_client():
@@ -84,7 +134,11 @@ def _ask(image_bytes: bytes, prompt: str) -> str:
         {'type': 'text', 'text': prompt},
         {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{b64}'}},
     ])
-    resp = _vision_client().invoke([message])
+    try:
+        resp = _vision_client().invoke([message])
+    except Exception as exc:
+        _mark_vision_exhausted(exc)
+        raise
     return _strip_backslashes(content_to_text(resp.content).strip())
 
 
