@@ -28,7 +28,7 @@ import requests
 import socketio
 
 BASE = os.environ.get("BASE", "http://localhost:5001")
-HOST_EMAIL = "sec@example.com"
+HOST_USERNAME = "sechost"
 HOST_PW = "password123"
 
 
@@ -43,13 +43,13 @@ def get_csrf(session, url):
     return m.group(1)
 
 
-def signup(session, email, password, display_name):
+def signup(session, username, password):
     r = session.post(
         f"{BASE}/auth/signup",
         data={
             "csrf_token": get_csrf(session, f"{BASE}/auth/signup"),
-            "email": email, "display_name": display_name,
-            "password": password, "password_confirm": password, "submit": "Sign Up",
+            "username": username,
+            "password": password, "submit": "Sign Up",
         },
         allow_redirects=False,
     )
@@ -57,14 +57,14 @@ def signup(session, email, password, display_name):
     return r.status_code
 
 
-def login(session, email, password, next_param=None):
+def login(session, username, password, next_param=None):
     url = f"{BASE}/auth/login"
     if next_param is not None:
         url += "?next=" + next_param
     return session.post(
         url,
         data={"csrf_token": get_csrf(session, f"{BASE}/auth/login"),
-              "email": email, "password": password, "submit": "Log In"},
+              "username": username, "password": password, "submit": "Log In"},
         allow_redirects=False,
     )
 
@@ -112,7 +112,7 @@ def check_open_redirect():
     hostile = ["////evil.com", "https:/evil.com", "/\\evil.com", "//evil.com"]
     for payload in hostile:
         s = requests.Session()  # fresh, unauthenticated session per attempt
-        r = login(s, HOST_EMAIL, HOST_PW, next_param=payload)
+        r = login(s, HOST_USERNAME, HOST_PW, next_param=payload)
         location = r.headers.get("Location", "")
         host = urlparse(location).netloc
         print(f"  next={payload!r:16} -> {r.status_code} Location={location!r}")
@@ -128,14 +128,14 @@ def check_sql_injection():
     payloads = [
         ("' OR '1'='1", "' OR '1'='1"),
         ("admin'--", "anything"),
-        ("sec@example.com' --", "wrong"),
+        ("sechost' --", "wrong"),
     ]
-    for email, pw in payloads:
+    for username, pw in payloads:
         s = requests.Session()
-        r = login(s, email, pw)
+        r = login(s, username, pw)
         # A successful login 302-redirects; a failure re-renders the form (200).
-        print(f"  email={email!r:22} -> HTTP {r.status_code}")
-        assert r.status_code == 200, f"injection may have authenticated: {email!r}"
+        print(f"  username={username!r:22} -> HTTP {r.status_code}")
+        assert r.status_code == 200, f"injection may have authenticated: {username!r}"
         # And the session must not be able to reach an authenticated page.
         guard = s.get(f"{BASE}/quiz/", allow_redirects=False)
         assert guard.status_code in (301, 302), "injected session reached /quiz/"
@@ -188,7 +188,7 @@ def check_rate_limit():
     codes = []
     for _ in range(15):
         s = requests.Session()
-        codes.append(login(s, "nobody@example.com", "wrong").status_code)
+        codes.append(login(s, "nobody", "wrong").status_code)
     print(f"  login POST codes: {codes}")
     if 429 not in codes:
         raise AssertionError(
@@ -202,10 +202,10 @@ def check_rate_limit():
 def main():
     print("=== SECURITY SUITE ===  (server must have rate limiting ENABLED)")
     host_session = requests.Session()
-    status = signup(host_session, HOST_EMAIL, HOST_PW, "SecHost")
+    status = signup(host_session, HOST_USERNAME, HOST_PW)
     if status == 200:
         # Already exists from a prior run — log in instead to get an authed session.
-        login(host_session, HOST_EMAIL, HOST_PW)
+        login(host_session, HOST_USERNAME, HOST_PW)
     print(f"  host ready (signup HTTP {status})")
 
     # Login-consuming checks run before the throttle test (which locks login).

@@ -23,16 +23,14 @@ def get_csrf(session, url):
     return match.group(1)
 
 
-def signup(session, email, password, display_name):
+def signup(session, username, password):
     token = get_csrf(session, f"{BASE}/auth/signup")
     r = session.post(
         f"{BASE}/auth/signup",
         data={
             "csrf_token": token,
-            "email": email,
-            "display_name": display_name,
+            "username": username,
             "password": password,
-            "password_confirm": password,
             "submit": "Sign Up",
         },
         allow_redirects=False,
@@ -177,7 +175,7 @@ def main():
     s = requests.Session()
 
     print("\n1) Signup + login as host")
-    signup(s, "alice@example.com", "password123", "Alice")
+    signup(s, "alicehost", "password123")
 
     print("\n2) Create a question set")
     set_id = create_set(s, "Vietnamese History", "Smoke test set")

@@ -23,8 +23,8 @@ def bootstrap_room():
     s = requests.Session()
     s.post(f"{BASE}/auth/signup", data={
         "csrf_token": csrf(s, f"{BASE}/auth/signup"),
-        "email": "carol@example.com", "display_name": "Carol",
-        "password": "password123", "password_confirm": "password123", "submit": "Sign Up",
+        "username": "carolhost",
+        "password": "password123", "submit": "Sign Up",
     }, allow_redirects=False)
     r = s.post(f"{BASE}/quiz/new", data={
         "csrf_token": csrf(s, f"{BASE}/quiz/new"),
