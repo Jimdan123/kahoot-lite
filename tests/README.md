@@ -5,10 +5,10 @@ Each script exits non-zero on failure so it can be wired into CI or a pre-push h
 
 ## Running
 
-1. Start the server in one shell:
+1. Start the server in one shell (Postgres only — no SQLite fallback; `DATABASE_URL` must already point at your local Postgres, see the top-level README's Setup section):
 
    ```bash
-   rm -f instance/kahoot.db      # ensure a clean signup namespace
+   psql "$DATABASE_URL" -c "DELETE FROM users WHERE username IN ('alicehost','sechost','carolhost','davehost');"  # clean signup namespace
    SECRET_KEY=dev-secret PORT=5001 python run.py
    ```
 
@@ -43,7 +43,7 @@ RATELIMIT_ENABLED=0 SECRET_KEY=dev-secret PORT=5001 python run.py
 with rate limiting ON (the default — do **not** set `RATELIMIT_ENABLED=0`):
 
 ```bash
-rm -f instance/kahoot.db                              # fresh login window
+psql "$DATABASE_URL" -c "DELETE FROM users WHERE username = 'sechost';"  # fresh signup for the host fixture
 SECRET_KEY=dev-secret PORT=5001 python run.py         # limits ON by default
 BASE=http://localhost:5001 python tests/test_security.py
 ```

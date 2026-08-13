@@ -12,7 +12,7 @@ default). Do NOT set RATELIMIT_ENABLED=0 here — test 1 needs the throttle live
 Because the login throttle is stateful per-IP, start from a fresh server (or
 wait ~60s between runs) so earlier logins don't pre-exhaust the window.
 
-    rm -f instance/kahoot.db
+    psql "$DATABASE_URL" -c "DELETE FROM users WHERE username = 'sechost';"
     SECRET_KEY=dev-secret PORT=5001 python run.py        # limits ON by default
     BASE=http://localhost:5001 python tests/test_security.py
 
