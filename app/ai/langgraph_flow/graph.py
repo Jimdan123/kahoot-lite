@@ -65,6 +65,7 @@ from app.ai.langgraph_flow.config import (
     MAX_RETRIES,
     MIN_ACCEPTED_QUESTIONS,
     PRACTICE_QUESTIONS_PER_DIFFICULTY,
+    proactive_enrichment_enabled,
     which_provider,
 )
 from app.ai.langgraph_flow.nodes.chunk import chunk_by_topic
@@ -174,16 +175,30 @@ def _bump_retry(state: PipelineState) -> dict:
     return {'retry_count': state.get('retry_count', 0) + 1}
 
 
+def _enrich_context_main(state: PipelineState) -> dict:
+    """Main-pipeline (proactive, pre-first-attempt) call site for
+    enrich_context — gated off by default via proactive_enrichment_enabled()
+    (see config/enrichment.py). Kept as a thin wrapper rather than pulling
+    the node out of the graph so this stays a one-line flip to re-enable;
+    the reactive retry-path call site (enrich_context_retry below) always
+    runs its own checks regardless of this flag."""
+    if not proactive_enrichment_enabled():
+        return {}
+    return enrich_context(state)
+
+
 def _build_graph():
     graph = StateGraph(PipelineState)
     graph.add_node('extract', extract_text)
     graph.add_node('chunk', chunk_by_topic)
     graph.add_node('comprehend', comprehend_chunks)
     graph.add_node('merge_comprehension', merge_comprehension)
-    graph.add_node('enrich_context', enrich_context)
-    # Same function, registered under a second name for the retry-path
-    # trigger — see nodes/enrich.py's module docstring for why one node
-    # can't serve both call sites (different outgoing edges).
+    graph.add_node('enrich_context', _enrich_context_main)
+    # Same underlying function, registered under a second name for the
+    # retry-path trigger — see nodes/enrich.py's module docstring for why
+    # one node can't serve both call sites (different outgoing edges).
+    # Unlike the main-path node above, this one is not gated by
+    # proactive_enrichment_enabled() — it's reactive, not proactive.
     graph.add_node('enrich_context_retry', enrich_context)
     graph.add_node('practice', generate_practice_questions)
     graph.add_node('generate', generate_questions)

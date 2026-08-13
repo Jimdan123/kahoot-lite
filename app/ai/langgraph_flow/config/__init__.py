@@ -17,6 +17,7 @@ from app.ai.langgraph_flow.config.enrichment import (
     MIN_DRAFTS_FOR_LEAK_CHECK,
     THIN_DOCUMENT_DEFINITION_RATIO,
     has_search_enrichment,
+    proactive_enrichment_enabled,
 )
 from app.ai.langgraph_flow.config.generation import (
     FALLBACK_TIME_LIMIT,
@@ -134,5 +135,6 @@ __all__ = [
     'has_search_enrichment',
     'has_together_fallback',
     'has_xai_fallback',
+    'proactive_enrichment_enabled',
     'which_provider',
 ]

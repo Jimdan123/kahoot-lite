@@ -33,3 +33,14 @@ MIN_DRAFTS_FOR_LEAK_CHECK = 3            # skip the leak-rate check below this â
 
 def has_search_enrichment() -> bool:
     return bool(os.environ.get('TAVILY_API_KEY'))
+
+
+def proactive_enrichment_enabled() -> bool:
+    """Whether the main pipeline runs enrich_context proactively (before
+    the first generate attempt, on the thin-document check alone â€” see
+    graph.py's docstring). Off by default: the retry-path call site
+    (triggered reactively by either the thin-document or high-leak-rate
+    check once a real attempt exists) is unaffected by this flag. Flip
+    with ENABLE_PROACTIVE_ENRICHMENT=1 to restore the original
+    always-checked-up-front behavior."""
+    return os.environ.get('ENABLE_PROACTIVE_ENRICHMENT', '0') == '1'

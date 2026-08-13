@@ -23,6 +23,9 @@ ENV/
 # Instance folder (SQLite DB, uploaded PDFs)
 instance/
 
+# Example/sample files (local test fixtures, not part of the repo)
+examples/
+
 # IDE
 .vscode/
 .idea/

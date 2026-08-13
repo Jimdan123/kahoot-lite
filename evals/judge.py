@@ -190,3 +190,4 @@ if __name__ == '__main__':
     reply = judge.generate("Reply with exactly one word: 'ok'.")
     print(f'Model: {judge.get_model_name()}')
     print(f'Reply: {reply!r}')
+
