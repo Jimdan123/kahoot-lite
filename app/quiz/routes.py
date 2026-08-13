@@ -26,6 +26,20 @@ def new_set():
     return render_template('quiz/new_set.html', form=form)
 
 
+@quiz_bp.route('/<int:set_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_set(set_id):
+    qs = _get_owned_set(set_id)
+    form = QuestionSetForm(obj=qs)
+    if form.validate_on_submit():
+        qs.name = form.name.data
+        qs.description = form.description.data
+        db.session.commit()
+        flash('Question set updated.', 'success')
+        return redirect(url_for('quiz.detail', set_id=qs.id))
+    return render_template('quiz/edit_set.html', form=form, question_set=qs)
+
+
 @quiz_bp.route('/<int:set_id>')
 @login_required
 def detail(set_id):
@@ -39,9 +53,10 @@ def new_question(set_id):
     qs = _get_owned_set(set_id)
     form = QuestionForm()
     if form.validate_on_submit():
+        max_position = qs.questions.order_by(None).with_entities(db.func.max(Question.position)).scalar()
         q = Question(
             question_set=qs,
-            position=qs.questions.count(),
+            position=0 if max_position is None else max_position + 1,
             text=form.text.data,
             option_a=form.option_a.data,
             option_b=form.option_b.data,
@@ -55,6 +70,37 @@ def new_question(set_id):
         flash('Question added.', 'success')
         return redirect(url_for('quiz.detail', set_id=qs.id))
     return render_template('quiz/new_question.html', form=form, question_set=qs)
+
+
+@quiz_bp.route('/<int:set_id>/questions/<int:question_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_question(set_id, question_id):
+    qs = _get_owned_set(set_id)
+    q = qs.questions.filter_by(id=question_id).first_or_404()
+    form = QuestionForm(obj=q)
+    if form.validate_on_submit():
+        q.text = form.text.data
+        q.option_a = form.option_a.data
+        q.option_b = form.option_b.data
+        q.option_c = form.option_c.data or None
+        q.option_d = form.option_d.data or None
+        q.correct_option = form.correct_option.data
+        q.time_limit = form.time_limit.data
+        db.session.commit()
+        flash('Question updated.', 'success')
+        return redirect(url_for('quiz.detail', set_id=qs.id))
+    return render_template('quiz/edit_question.html', form=form, question_set=qs, question=q)
+
+
+@quiz_bp.route('/<int:set_id>/questions/<int:question_id>/delete', methods=['POST'])
+@login_required
+def delete_question(set_id, question_id):
+    qs = _get_owned_set(set_id)
+    q = qs.questions.filter_by(id=question_id).first_or_404()
+    db.session.delete(q)
+    db.session.commit()
+    flash('Question deleted.', 'info')
+    return redirect(url_for('quiz.detail', set_id=qs.id))
 
 
 @quiz_bp.route('/<int:set_id>/delete', methods=['POST'])

@@ -7,6 +7,7 @@
 {% endif %}
 <div class="mb-3">
     <a href="{{ url_for('quiz.new_question', set_id=question_set.id) }}" class="btn btn-primary">+ Add Question</a>
+    <a href="{{ url_for('quiz.edit_set', set_id=question_set.id) }}" class="btn btn-outline-secondary">Edit Set</a>
     {% if question_set.questions.count() > 0 %}
     <form method="POST" action="{{ url_for('game.create_room', set_id=question_set.id) }}" class="d-inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -35,6 +36,13 @@
             {% if q.difficulty %}&middot; <span class="badge bg-secondary">{{ q.difficulty }}</span>{% endif %}
             {% if q.source == 'closed_book' %}&middot; <span class="badge bg-info text-dark" title="Also answerable without the uploaded document">Closed Book</span>{% endif %}
         </small>
+        <div class="mt-1">
+            <a href="{{ url_for('quiz.edit_question', set_id=question_set.id, question_id=q.id) }}" class="btn btn-sm btn-outline-secondary">Edit</a>
+            <form method="POST" action="{{ url_for('quiz.delete_question', set_id=question_set.id, question_id=q.id) }}" class="d-inline" onsubmit="return confirm('Delete this question?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+        </div>
     </li>
     {% endfor %}
 </ol>

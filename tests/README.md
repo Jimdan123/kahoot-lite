@@ -8,7 +8,7 @@ Each script exits non-zero on failure so it can be wired into CI or a pre-push h
 1. Start the server in one shell (Postgres only — no SQLite fallback; `DATABASE_URL` must already point at your local Postgres, see the top-level README's Setup section):
 
    ```bash
-   psql "$DATABASE_URL" -c "DELETE FROM users WHERE username IN ('alicehost','sechost','carolhost','davehost');"  # clean signup namespace
+   psql "$DATABASE_URL" -c "DELETE FROM users WHERE username IN ('alicehost','sechost','carolhost','davehost','crudhost','crudother');"  # clean signup namespace
    SECRET_KEY=dev-secret PORT=5001 python run.py
    ```
 
@@ -18,6 +18,7 @@ Each script exits non-zero on failure so it can be wired into CI or a pre-push h
    BASE=http://localhost:5001 python tests/smoke_test.py
    BASE=http://localhost:5001 python tests/test_impersonation.py
    BASE=http://localhost:5001 python tests/test_reconnect.py
+   BASE=http://localhost:5001 python tests/test_quiz_crud.py
    ```
 
 Each test file is self-contained. `smoke_test.py` covers the happy path plus
@@ -26,6 +27,9 @@ the Vuln-1 regression check (unauthenticated `host_join` must receive `error`).
 via public `player_list` must be blocked by the rejoin-token check).
 `test_reconnect.py` covers the follow-up fix (a mid-game disconnect + rejoin
 with the real token restores score/answer state and catches the socket up).
+`test_quiz_crud.py` covers question-set/question editing: an edit form must
+pre-fill the existing text/options/correct-answer, and a non-owner must get
+403 (not 404) on `edit_set`/`edit_question`/`delete_question`.
 
 ## Rate limiting and the functional suites
 
