@@ -22,7 +22,11 @@ Each script exits non-zero on failure so it can be wired into CI or a pre-push h
    ```
 
 Each test file is self-contained. `smoke_test.py` covers the happy path plus
-the Vuln-1 regression check (unauthenticated `host_join` must receive `error`).
+the Vuln-1 regression check (unauthenticated `host_join` must receive `error`)
+and a regression check that the QR/token join link (`/game/join/<token>`,
+GET-only) doesn't 405 when its form is submitted — the form must carry an
+explicit `action` pointing at `/game/join` rather than relying on the
+browser's default post-to-current-URL behavior.
 `test_impersonation.py` covers the Vuln-3 regression (nickname impersonation
 via public `player_list` must be blocked by the rejoin-token check).
 `test_reconnect.py` covers the follow-up fix (a mid-game disconnect + rejoin

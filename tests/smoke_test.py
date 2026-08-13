@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import urljoin
 import requests
 import socketio
 
@@ -90,12 +91,50 @@ def check_host_view(session, pin):
     assert pin in r.text, "PIN not in host page"
     assert "data:image/png;base64" in r.text, "QR code not in host page"
     print("  ✓ host page has PIN and QR")
+    return r.text
 
 
 def check_join_page():
     r = requests.get(f"{BASE}/game/join?pin=00000")
     print(f"  GET join -> HTTP {r.status_code}")
     assert "Join a Game" in r.text
+
+
+def check_join_via_qr_token(host_text, pin):
+    """
+    Regression test: game.join_via_token (the QR/link entry point) is
+    GET-only. join.html's <form> must carry an explicit
+    action="{{ url_for('game.join') }}" — without it, a browser reached via
+    the QR link posts back to the token URL by default and gets a 405
+    Method Not Allowed instead of joining.
+    """
+    m = re.search(r"Players join at <code>(.*?)</code>", host_text)
+    assert m, "join_url not found on host page"
+    join_url = m.group(1)
+
+    session = requests.Session()
+    r = session.get(join_url)
+    print(f"  GET (QR link) {join_url} -> HTTP {r.status_code}")
+    assert r.status_code == 200
+
+    action_match = re.search(r'<form method="POST"(?:\s+action="([^"]*)")?\s*>', r.text)
+    assert action_match, "join form not found on token-rendered page"
+    action = action_match.group(1)
+    submit_url = urljoin(join_url, action) if action else join_url
+
+    csrf_match = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', r.text)
+    assert csrf_match, "csrf_token not found on join page"
+
+    r2 = session.post(submit_url, data={
+        "csrf_token": csrf_match.group(1),
+        "pin": pin,
+        "nickname": "QRPlayer",
+    }, allow_redirects=False)
+    print(f"  POST {submit_url} -> HTTP {r2.status_code}")
+    assert r2.status_code != 405, "join form submitted back to the GET-only token URL (405)"
+    assert r2.status_code == 302 and "/game/play/" in r2.headers.get("Location", ""), \
+        f"expected redirect to player_view, got {r2.status_code} {r2.headers.get('Location')}"
+    print("  ✓ QR/token join flow submits without a 405")
 
 
 def cookie_header(session):
@@ -190,10 +229,13 @@ def main():
     print(f"  room PIN: {pin}")
 
     print("\n5) Verify host view has PIN + QR")
-    check_host_view(s, pin)
+    host_html = check_host_view(s, pin)
 
     print("\n6) Verify /game/join loads anonymously")
     check_join_page()
+
+    print("\n6b) Verify QR/token join link doesn't 405 on submit")
+    check_join_via_qr_token(host_html, pin)
 
     websocket_smoke(pin, s)
     websocket_auth_bypass_check(pin)

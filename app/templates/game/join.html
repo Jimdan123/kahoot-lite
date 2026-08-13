@@ -5,7 +5,7 @@
         <div class="card">
             <div class="card-body">
                 <h3>Join a Game</h3>
-                <form method="POST">
+                <form method="POST" action="{{ url_for('game.join') }}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
                         <label class="form-label">Game PIN</label>
